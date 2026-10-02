@@ -76,6 +76,13 @@ public actor AudioRecorder: AudioRecording {
         startEngine = starter
     }
 
+    /// Surface a mid-recording input failure (a restart that exhausted its
+    /// budget, a rebuild that couldn't recover) while the take continues.
+    /// Call before `start()`; the handler may run on a non-main thread.
+    public nonisolated func setErrorHandler(_ handler: @escaping @Sendable (any Swift.Error) -> Void) {
+        sink.errorHandler = handler
+    }
+
     public nonisolated func makeLevelStream() -> AsyncStream<Float> {
         sink.makeLevelStream()
     }
@@ -242,7 +249,11 @@ public actor AudioRecorder: AudioRecording {
         deviceUID = nil
         let samples = sink.takeSamples()
         if let failure = sink.takeFailure() {
-            throw failure
+            // Salvage: a take that died mid-recording keeps whatever it
+            // captured past the 0.5 s floor — a partial clip beats nothing.
+            // The UI was already told via sink.errorHandler at failure time.
+            guard samples.count >= 8_000 else { throw failure }
+            audioLog.error("input failed mid-recording — keeping \(samples.count, privacy: .public) captured samples: \(failure.localizedDescription, privacy: .public)")
         }
         return RecordedAudio(buffer: AudioBuffer16k(samples: samples),
                              duration: Double(samples.count) / 16_000)

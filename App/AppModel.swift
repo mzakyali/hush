@@ -103,6 +103,14 @@ final class AppModel: ObservableObject {
             syncSidePanelVisibility()
         }
     }
+    /// "Sliver when idle" — the resting panel shrinks to a 6 pt hairline.
+    @Published var sidePanelSliver: Bool =
+        UserDefaults.standard.bool(forKey: "sidePanelSliver") {
+        didSet {
+            UserDefaults.standard.set(sidePanelSliver, forKey: "sidePanelSliver")
+            edgePanel.relayout()
+        }
+    }
     @Published var showInMenuBar: Bool =
         UserDefaults.standard.object(forKey: "showInMenuBar") as? Bool ?? false {
         didSet { UserDefaults.standard.set(showInMenuBar, forKey: "showInMenuBar") }
@@ -198,6 +206,15 @@ final class AppModel: ObservableObject {
         )
         finish.body = { [weak self] result in
             await self?.saveDictation(result)
+        }
+
+        // Mid-recording input failures (a config-change restart that couldn't
+        // recover) are surfaced here; stop() still salvages whatever it got.
+        recorder.setErrorHandler { error in
+            Task { @MainActor in
+                appLog.error("audio input failed mid-recording: \(error.localizedDescription, privacy: .public)")
+                UserNotifications.post("Mic input was interrupted — keeping what was captured")
+            }
         }
     }
 
@@ -302,6 +319,9 @@ final class AppModel: ObservableObject {
         recording.overlayState = .recording
         recording.overlayPhase = .visible
         overlay.show()
+        // Measurement setup mirrors real use: main window open, side panel up.
+        openMainWindow()
+        syncSidePanelVisibility()
         var tick = 0
         synthLevelTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {

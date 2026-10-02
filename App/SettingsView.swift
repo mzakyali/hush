@@ -39,6 +39,8 @@ struct SettingsView: View {
             // so the toggle that would remove the last surface is disabled.
             Toggle("Show side panel", isOn: $model.showSidePanel)
                 .disabled(model.showSidePanel && !model.showInMenuBar && !model.showInDock)
+            Toggle("Sliver when idle", isOn: $model.sidePanelSliver)
+                .disabled(!model.showSidePanel)
             Toggle("Show in menu bar", isOn: $model.showInMenuBar)
                 .disabled(model.showInMenuBar && !model.showSidePanel && !model.showInDock)
             Toggle("Show in Dock", isOn: $model.showInDock)

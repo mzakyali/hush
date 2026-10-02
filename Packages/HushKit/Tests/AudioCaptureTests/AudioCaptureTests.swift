@@ -191,6 +191,36 @@ private func makePCMBuffer(_ samples: [Float] = [0.1, -0.1, 0.2, -0.2]) -> AVAud
     }
 }
 
+/// A take that failed mid-recording keeps whatever it captured past the
+/// 0.5 s floor — a partial clip beats nothing.
+@Test func stopSalvagesPartialRecording() async throws {
+    struct Boom: Error {}
+    let recorder = AudioRecorder()
+    await recorder.setEngineStarter { _ in }
+    try await recorder.start(deviceUID: nil)
+
+    recorder.sink.append(makePCMBuffer([Float](repeating: 0.1, count: 9_000)))
+    recorder.sink.markFailed(Boom())
+
+    let audio = try await recorder.stop()
+    #expect(audio.buffer.samples.count == 9_000)
+}
+
+/// Below the 0.5 s floor there's nothing worth keeping — surface the failure.
+@Test func stopThrowsWhenSalvageBelowFloor() async throws {
+    struct Boom: Error {}
+    let recorder = AudioRecorder()
+    await recorder.setEngineStarter { _ in }
+    try await recorder.start(deviceUID: nil)
+
+    recorder.sink.append(makePCMBuffer([Float](repeating: 0.1, count: 4_000)))
+    recorder.sink.markFailed(Boom())
+
+    await #expect(throws: Boom.self) {
+        _ = try await recorder.stop()
+    }
+}
+
 /// A failed rebuild doesn't kill the recording permanently: the next config
 /// change retries (the other app released the device) and clears the failure.
 @Test func failedRestartRetriesOnNextChange() async throws {

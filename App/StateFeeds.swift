@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// Hot, high-frequency UI state split out of `AppModel`. Before the split,
-/// `levelHistory` (~12 Hz while recording) and `edgePanelSize` (every hover
-/// animation frame) republished the one AppModel that every view observes, so
+/// `levelHistory` (~12 Hz while recording) and per-frame panel geometry
+/// republished the one AppModel that every view observes, so
 /// the whole UI re-evaluated per tick. Views subscribe only to the feed whose
 /// state they read; AppModel's own publishes drop to a few per dictation.
 @MainActor
@@ -36,8 +36,9 @@ final class RecordingFeed: ObservableObject {
     var onOverlayStateChange: (@MainActor () -> Void)?
 }
 
-/// Side-panel geometry — `edgePanelSize` moves on every hover-animation frame
-/// and `edgeExpanded`/`edgeAttachment` change during drags.
+/// Side-panel geometry — `edgeExpanded`/`edgeAttachment`/`railCenterY` change
+/// during drags and hover morphs. The window itself is a fixed size now, so
+/// nothing here publishes per animation frame.
 @MainActor
 final class SidePanelGeometry: ObservableObject {
     nonisolated init() {}
@@ -45,8 +46,9 @@ final class SidePanelGeometry: ObservableObject {
     @Published var edgeExpanded = false
     /// Which screen edge the panel is docked to (or floating mid-screen).
     @Published var edgeAttachment: SidePanelAttachment = .right
-    /// Live frame size while the panel animates between summary and detail.
-    @Published var edgePanelSize: CGSize = .zero
+    /// The collapsed rail's vertical centre in window coordinates (y-down) —
+    /// the card morphs out of it. nil → centred.
+    @Published var railCenterY: CGFloat?
 }
 
 /// History audio playback — `progress` ticks at 10 Hz while a recording

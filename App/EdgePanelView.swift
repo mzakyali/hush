@@ -66,155 +66,199 @@ struct EdgeTabShape: Shape {
     }
 }
 
-/// One outline shared by the rendering and window-level pointer routing.
-struct SidePanelShape: Shape {
-    var attachment: SidePanelAttachment
+/// Panel geometry shared by the view and the controller's hit-test.
+///
+/// The window stays at `window` size while the panel is visible — the card
+/// morphs out of the resting rail inside it — so the frame is only touched
+/// on drag, dock, screen change and show. `margin` is transparent headroom
+/// for the shadow; for an attached panel the shape's flush edge lands at
+/// `margin` inside the window.
+enum EdgePanelLayout {
+    static let margin: CGFloat = 24
+    /// The expanded card.
+    static let card = CGSize(width: 240, height: 424)
+    /// Resting rail — status ring + record button.
+    static let rail = CGSize(width: 32, height: 112)
+    /// "Sliver when idle" — a hairline flush to the edge.
+    static let sliver = CGSize(width: 6, height: 64)
+    static let window = CGSize(width: card.width + 2 * margin,
+                               height: card.height + 2 * margin)
 
-    func path(in rect: CGRect) -> Path {
-        if attachment == .floating {
-            return RoundedRectangle(cornerRadius: 24).path(in: rect)
+    static func collapsedSize(sliver: Bool) -> CGSize { sliver ? self.sliver : rail }
+
+    /// Concave-fillet (cx/cy) and corner (rx/ry) radii per size, plus the
+    /// corner radius for the floating card. `cx + rx ≤ w` — equal means the
+    /// top/bottom edges are zero-length and the silhouette is all fillet.
+    static func radii(expanded: Bool, sliver: Bool)
+        -> (cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat, corner: CGFloat) {
+        if expanded { return (18, 18, 22, 22, 24) }
+        return sliver ? (3, 6, 3, 6, 3) : (10, 18, 10, 18, 16)
+    }
+
+    /// The shape's rect inside the fixed window. `railCenterY` is the resting
+    /// rail's vertical centre in window coordinates (y-down); the card always
+    /// centres itself in the window.
+    static func shapeRect(expanded: Bool, sliver: Bool,
+                          attachment: SidePanelAttachment,
+                          railCenterY: CGFloat,
+                          in window: CGSize = Self.window) -> CGRect {
+        let size = expanded ? card : collapsedSize(sliver: sliver)
+        let midY = expanded ? window.height / 2 : railCenterY
+        let x: CGFloat = switch attachment {
+        case .right: window.width - margin - size.width
+        case .left: margin
+        case .floating: (window.width - size.width) / 2
         }
-        let shape = EdgeTabShape(w: rect.width, h: rect.height - 80,
-                                 cx: 18, cy: 18, rx: 22, ry: 22)
-        let path = shape.path(in: rect)
+        return CGRect(x: x, y: midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
+    /// The silhouette in window coordinates — fill AND hit-test area.
+    static func path(expanded: Bool, sliver: Bool,
+                     attachment: SidePanelAttachment,
+                     railCenterY: CGFloat,
+                     in window: CGSize = Self.window) -> Path {
+        let rect = shapeRect(expanded: expanded, sliver: sliver,
+                             attachment: attachment,
+                             railCenterY: railCenterY, in: window)
+        let r = radii(expanded: expanded, sliver: sliver)
+        if attachment == .floating {
+            return RoundedRectangle(cornerRadius: r.corner, style: .continuous)
+                .path(in: rect)
+        }
+        let path = EdgeTabShape(w: rect.width,
+                                h: rect.height - 2 * (r.cy + r.ry),
+                                cx: r.cx, cy: r.cy, rx: r.rx, ry: r.ry)
+            .path(in: rect)
         if attachment == .left {
             return path.applying(CGAffineTransform(a: -1, b: 0, c: 0, d: 1,
-                                                  tx: rect.minX + rect.maxX, ty: 0))
+                                                  tx: rect.minX + rect.maxX,
+                                                  ty: 0))
         }
         return path
     }
 }
 
+/// The side panel's content, laid out inside the fixed-size window. The
+/// silhouette and content morph between the resting rail and the expanded
+/// card entirely in SwiftUI — the controller never resizes the window.
 struct EdgePanelView: View {
     @ObservedObject var model: AppModel
-    /// Geometry publishes on every hover-animation frame — a focused feed so
-    /// those frames re-render only this view.
+    /// `edgeExpanded`/`edgeAttachment`/`railCenterY` — a focused feed so drag
+    /// and morph frames re-render only this view.
     @ObservedObject var geometry: SidePanelGeometry
+    /// Snapshot forcing.
     var forceExpanded = false
     var forceAttachment: SidePanelAttachment?
+    var forceSliver = false
 
-    static func size(expanded: Bool) -> CGSize {
-        expanded ? CGSize(width: 240, height: 424) : CGSize(width: 56, height: 260)
-    }
-
-    private var isExpanded: Bool { geometry.edgeExpanded || forceExpanded }
-    private var attachment: SidePanelAttachment { forceAttachment ?? geometry.edgeAttachment }
     @HushReducedMotion private var reduceMotion
 
+    private var sliverMode: Bool { model.sidePanelSliver || forceSliver }
+    private var isExpanded: Bool { geometry.edgeExpanded || forceExpanded }
+    private var attachment: SidePanelAttachment { forceAttachment ?? geometry.edgeAttachment }
+
     var body: some View {
-        let size = forceAttachment != nil || geometry.edgePanelSize == .zero
-            ? Self.size(expanded: isExpanded) : geometry.edgePanelSize
-        let shape = SidePanelShape(attachment: attachment)
-        VStack(spacing: isExpanded ? 12 : 8) {
-            dragHandle
+        GeometryReader { geo in
+            let win = geo.size
+            let railY = geometry.railCenterY ?? win.height / 2
+            let collapsedRect = EdgePanelLayout.shapeRect(
+                expanded: false, sliver: sliverMode,
+                attachment: attachment, railCenterY: railY, in: win)
+            let cardRect = EdgePanelLayout.shapeRect(
+                expanded: true, sliver: sliverMode,
+                attachment: attachment, railCenterY: railY, in: win)
+            let shapeRect = isExpanded ? cardRect : collapsedRect
             ZStack {
-                if isExpanded {
-                    expandedContent.transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.96)))
-                } else {
-                    summaryContent.transition(.opacity)
-                }
+                silhouette
+                    .frame(width: shapeRect.width, height: shapeRect.height)
+                    .shadow(color: .black.opacity(0.35), radius: 18,
+                            x: attachment == .right ? -4
+                              : attachment == .left ? 4 : 0)
+                    .position(x: shapeRect.midX, y: shapeRect.midY)
+
+                collapsedContent
+                    .frame(width: collapsedRect.width, height: collapsedRect.height)
+                    .position(x: collapsedRect.midX, y: collapsedRect.midY)
+                    .opacity(isExpanded ? 0 : 1)
+                    .allowsHitTesting(!isExpanded)
+
+                expandedContent
+                    .frame(width: cardRect.width, height: cardRect.height)
+                    .position(x: cardRect.midX, y: cardRect.midY)
+                    .opacity(isExpanded ? 1 : 0)
+                    .allowsHitTesting(isExpanded)
             }
-            .animation(Theme.Motion.response(reduceMotion), value: isExpanded)
+            .animation(reduceMotion ? nil : Theme.Motion.spring, value: isExpanded)
+            .animation(Theme.Motion.response(reduceMotion), value: geometry.railCenterY)
         }
-        .padding(.horizontal, isExpanded ? 16 : 8)
-        .padding(.vertical, 30)
-        .frame(width: size.width, height: size.height)
-        .background { shape.fill(Color.black) }
-        .clipShape(shape)
-        .contentShape(shape)
         .preferredColorScheme(.dark)
     }
 
-    private var dragHandle: some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(Theme.Color.textSecondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: isExpanded ? 16 : 12)
-            .overlay {
-                if !SnapshotRunner.requested {
-                    SidePanelDragHandle(
-                        onDrag: { model.edgePanel.drag(to: $0) },
-                        onEnd: { model.edgePanel.endDrag() })
+    /// The black silhouette — one EdgeTabShape whose radii interpolate
+    /// through the morph; a rounded card while floating.
+    @ViewBuilder private var silhouette: some View {
+        let r = EdgePanelLayout.radii(expanded: isExpanded, sliver: sliverMode)
+        let size = isExpanded ? EdgePanelLayout.card
+                              : EdgePanelLayout.collapsedSize(sliver: sliverMode)
+        if attachment == .floating {
+            RoundedRectangle(cornerRadius: r.corner, style: .continuous)
+                .fill(Color.black)
+        } else {
+            EdgeTabShape(w: size.width,
+                         h: size.height - 2 * (r.cy + r.ry),
+                         cx: r.cx, cy: r.cy, rx: r.rx, ry: r.ry)
+                .fill(Color.black)
+                .scaleEffect(x: attachment == .left ? -1 : 1)
+        }
+    }
+
+    // MARK: - collapsed rail / sliver
+
+    /// The whole rail is the drag surface — a 4 pt movement threshold keeps
+    /// taps on the record button firing.
+    private var railDrag: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { _ in model.edgePanel.drag(to: NSEvent.mouseLocation) }
+            .onEnded { _ in model.edgePanel.endDrag() }
+    }
+
+    private var collapsedContent: some View {
+        Group {
+            if sliverMode {
+                Capsule(style: .continuous)
+                    .fill(statusColor)
+                    .frame(width: 2, height: 52)
+                    .animation(Theme.Motion.hover, value: statusColor)
+            } else {
+                VStack(spacing: 10) {
+                    statusRing
+                    recordButton(diameter: 24)
                 }
             }
-            .accessibilityLabel("Move side panel")
-            .help("Drag vertically or across the screen. Release to snap to the nearest edge.")
-    }
-
-    private var summaryContent: some View {
-        VStack(spacing: 8) {
-            Image(systemName: statusSymbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(statusColor)
-                .frame(width: 32, height: 32)
-                .background(statusColor.opacity(0.08), in: Circle())
-                .overlay(Circle().stroke(statusColor.opacity(0.7), lineWidth: 1.5))
-                .contentTransition(.opacity)
-                .animation(.easeOut(duration: 0.12), value: statusSymbol)
-                .help(statusLabel)
-                .accessibilityLabel("Hush: \(statusLabel)")
-
-            Group {
-                if SnapshotRunner.requested {
-                    microphoneIcon
-                } else {
-                    Menu {
-                        Button("Automatic") { model.pinMic(nil) }
-                        Divider()
-                        ForEach(model.inputDevices.filter(\.isConnected), id: \.uid) { device in
-                            Button(device.name) { model.pinMic(device.uid) }
-                        }
-                    } label: { microphoneIcon }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                }
-            }
-            .help("Active microphone: \(model.currentMicName)")
-            .accessibilityLabel("Microphone: \(model.currentMicName)")
-
-            Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.Color.textSecondary)
-                .frame(width: 32, height: 28)
-                .help("\(model.stats.todayWords.formatted()) words today · \(model.stats.totalSessions) dictations")
-                .accessibilityLabel("\(model.stats.todayWords) words today")
-
-            recordButton
-            gearButton
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .gesture(railDrag)
+        .accessibilityElement(children: .contain)
     }
 
-    private var microphoneIcon: some View {
-        Image(systemName: microphoneSymbol)
-            .font(.system(size: 14))
-            .foregroundStyle(Theme.Color.textPrimary)
-            .frame(width: 32, height: 32)
-            .background(Theme.Color.raised, in: Circle())
-    }
-
-    private var statusSymbol: String {
-        switch model.pipelineState {
-        case .recording: return "waveform"
-        case .processing: return "ellipsis"
-        case .idle:
-            if model.needsAttention || model.needsRelaunch { return "exclamationmark" }
-            return model.modelsLoading ? "arrow.down" : "checkmark"
-        }
+    /// 12 pt status ring — same colour semantics as the card's StatusDot.
+    /// No symbol effects; colour/opacity transitions only.
+    private var statusRing: some View {
+        Circle()
+            .strokeBorder(statusColor.opacity(0.9), lineWidth: 1.5)
+            .background(statusColor.opacity(0.16), in: Circle())
+            .frame(width: 12, height: 12)
+            .animation(Theme.Motion.hover, value: statusColor)
+            .help(statusLabel)
+            .accessibilityLabel("Hush: \(statusLabel)")
     }
 
     private var statusColor: Color {
         if model.pipelineState != .idle { return Theme.Color.signal }
         if model.needsAttention || model.needsRelaunch { return Theme.Color.error }
         return model.modelsLoading ? Theme.Color.warn : Theme.Color.ok
-    }
-
-    private var microphoneSymbol: String {
-        if model.currentMicName.localizedCaseInsensitiveContains("airpods") { return "airpodspro" }
-        if model.currentMicName.localizedCaseInsensitiveContains("macbook") { return "laptopcomputer" }
-        return "mic.fill"
     }
 
     private var statusLabel: String {
@@ -236,19 +280,23 @@ struct EdgePanelView: View {
         return .ok
     }
 
+    // MARK: - expanded card
+
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            dragHandle
             HStack(spacing: 8) {
                 StatusDot(level: statusLevel, text: "")
                 Text(statusLabel)
                     .font(Theme.Font.label())
                     .foregroundStyle(Theme.Color.textPrimary)
+                Spacer()
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.Color.textTertiary)
+                    .help("\(model.stats.todayWords.formatted()) words today · \(model.stats.totalSessions) dictations")
             }
-            Text(model.currentMicName)
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Color.textSecondary)
-                .lineLimit(1)
-                .help(model.currentMicName)
+            micRow
             HStack(alignment: .firstTextBaseline) {
                 Text(model.stats.todayWords.formatted(.number))
                     .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(model.stats.todayWords)))
@@ -261,23 +309,120 @@ struct EdgePanelView: View {
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Color.textSecondary)
             }
-            DotMatrix(columns: weekFractions, rows: 5, dot: 6, gap: 5,
-                      hotColumns: [6])
-                .frame(height: 50)
-                .accessibilityLabel("Dictation activity over the last seven days")
+            VStack(spacing: 4) {
+                DotMatrix(columns: weekFractions, rows: 5, dot: 6, gap: 5,
+                          hotColumns: [6])
+                    .frame(width: 72, height: 50)
+                weekdayStrip
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Dictation activity over the last seven days")
             VStack(spacing: 0) {
                 statRow("WPM", String(format: "%.0f", model.stats.spokenWPM))
                 statRow("TIME SAVED", HomeView.timeSaved(model.stats.timeSavedSeconds))
                 statRow("STREAK", model.streakDays == 1 ? "1 day" : "\(model.streakDays) days")
                 statRow("DICTATIONS", model.stats.totalSessions.formatted(.number))
             }
+            Spacer(minLength: 0)
             HStack {
-                recordButton
+                recordButton(diameter: 36)
                 Spacer()
                 gearButton
             }
         }
-        .frame(maxHeight: .infinity)
+        .padding(EdgeInsets(top: 10, leading: 16, bottom: 16, trailing: 16))
+    }
+
+    /// Single-letter weekday labels under the dot matrix, one per column —
+    /// oldest → today (the rightmost, in signal). Geist Mono 9 pt.
+    private var weekdayStrip: some View {
+        // DotMatrix pitch = dot 6 + gap 5 = 11; letters are centred under
+        // their column (label frames are 11 wide, dots start 2.5 pt in).
+        HStack(spacing: 0) {
+            ForEach(0..<7, id: \.self) { i in
+                Text(weekdayLetter(column: i))
+                    .font(Theme.Font.label(9))
+                    .foregroundStyle(i == 6 ? Theme.Color.signal : Theme.Color.textTertiary)
+                    .frame(width: 11)
+            }
+        }
+        .frame(width: 72)
+        .offset(x: -2.5)
+    }
+
+    private func weekdayLetter(column: Int) -> String {
+        guard let day = Calendar.current.date(byAdding: .day, value: column - 6,
+                                              to: Date()) else { return "" }
+        let weekday = Calendar.current.component(.weekday, from: day)
+        let symbol = Calendar.current.veryShortWeekdaySymbols[weekday - 1]
+        return String(symbol.prefix(1))
+    }
+
+    /// Mic device row — `mic` + name + chevron, opens the pin menu.
+    private var micRow: some View {
+        Group {
+            if SnapshotRunner.requested {
+                micRowLabel
+            } else {
+                Menu {
+                    Button("Automatic") { model.pinMic(nil) }
+                    if model.inputDevices.contains(where: \.isConnected) {
+                        Divider()
+                    }
+                    ForEach(model.inputDevices.filter(\.isConnected), id: \.uid) { device in
+                        Button { model.pinMic(device.uid) } label: {
+                            if model.micStore.pinnedUID == device.uid {
+                                Label(device.name, systemImage: "checkmark")
+                            } else {
+                                Text(device.name)
+                            }
+                        }
+                    }
+                } label: { micRowLabel }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+            }
+        }
+        .help("Active microphone: \(model.currentMicName)")
+        .accessibilityLabel("Microphone: \(model.currentMicName)")
+    }
+
+    private var micRowLabel: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "mic")
+                .font(.system(size: 10))
+            Text(model.currentMicName)
+                .font(Theme.Font.data(11))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+        }
+        .foregroundStyle(Theme.Color.textSecondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Theme.Color.raised.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    private var dragHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(Theme.Color.textSecondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 14)
+            .overlay {
+                if !SnapshotRunner.requested {
+                    SidePanelDragHandle(
+                        onDrag: { model.edgePanel.drag(to: $0) },
+                        onEnd: { model.edgePanel.endDrag() })
+                }
+            }
+            .accessibilityLabel("Move side panel")
+            .help("Drag vertically or across the screen. Release to snap to the nearest edge.")
     }
 
     /// Last 7 days (oldest → today) as 0…1 lit fractions of 5 rows.
@@ -311,20 +456,19 @@ struct EdgePanelView: View {
         }
     }
 
-    /// 36pt signal circle — mic glyph idle, stop square while recording.
     private var recordDisabled: Bool {
         model.pipelineState != .recording &&
             (model.pipelineState == .processing || model.modelsLoading || model.needsAttention || model.needsRelaunch)
     }
 
-    private var recordButton: some View {
+    private func recordButton(diameter: CGFloat) -> some View {
         Button {
             model.toggleDictation()
         } label: {
             Image(systemName: model.pipelineState == .recording ? "stop.fill" : "mic.fill")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: diameter * 0.38, weight: .semibold))
                 .foregroundStyle(Theme.Color.window)
-                .frame(width: isExpanded ? 36 : 32, height: isExpanded ? 36 : 32)
+                .frame(width: diameter, height: diameter)
                 .background(Theme.Color.signal, in: Circle())
         }
         .buttonStyle(HushIconButtonStyle())
@@ -340,7 +484,7 @@ struct EdgePanelView: View {
             Image(systemName: "gearshape")
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.Color.textSecondary)
-                .frame(width: isExpanded ? 28 : 24, height: isExpanded ? 28 : 24)
+                .frame(width: 28, height: 28)
                 .background(Theme.Color.raised, in: Circle())
                 .overlay(Circle().stroke(Theme.Color.hairline, lineWidth: 1))
         }

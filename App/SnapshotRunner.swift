@@ -76,6 +76,7 @@ enum SnapshotRunner {
 
         // --- side panel: resting summary, details, and desktop/edge placements ---
         renderEdge(model: model, expanded: false, name: "edge-collapsed", in: dir)
+        renderEdge(model: model, expanded: false, sliver: true, name: "edge-sliver", in: dir)
         renderEdge(model: model, expanded: true, name: "edge-expanded", in: dir)
         renderEdge(model: model, expanded: false, attachment: .left, name: "edge-left", in: dir)
         renderEdge(model: model, expanded: false, attachment: .floating, name: "edge-floating", in: dir)
@@ -212,20 +213,30 @@ enum SnapshotRunner {
     }
 
     /// The side panel on a mid-grey "wallpaper" so the inverted corners
-    /// where the shape meets the screen edge are visible in the PNG.
+    /// where the shape meets the screen edge are visible in the PNG. The
+    /// fixed-size window (288×472) is offset so the silhouette's flush edge
+    /// lands on the canvas edge, like a real screen edge.
     private static func renderEdge(model: AppModel, expanded: Bool,
                                    attachment: SidePanelAttachment = .right,
                                    reducedMotion: Bool = false,
+                                   sliver: Bool = false,
                                    name: String, in dir: URL) {
-        let view = ZStack(alignment: attachment == .left ? .leading : attachment == .right ? .trailing : .center) {
+        model.geometry.edgeExpanded = false   // verification may linger
+        model.geometry.railCenterY = nil
+        let win = EdgePanelLayout.window
+        let view = ZStack(alignment: .center) {
             LinearGradient(
                 colors: [Color(hb: 0x8E939B), Color(hb: 0x676C73)],
                 startPoint: .topLeading, endPoint: .bottomTrailing)
             EdgePanelView(model: model, geometry: model.geometry,
-                          forceExpanded: expanded, forceAttachment: attachment)
+                          forceExpanded: expanded, forceAttachment: attachment,
+                          forceSliver: sliver)
+                .frame(width: win.width, height: win.height)
+                .offset(x: attachment == .right ? EdgePanelLayout.margin
+                        : attachment == .left ? -EdgePanelLayout.margin : 0)
         }
         render(view.environment(\.hushReducedMotion, reducedMotion),
-               size: CGSize(width: 360, height: 560), name: name, in: dir)
+               size: CGSize(width: win.width, height: 560), name: name, in: dir)
     }
 
     /// Real window capture: builds the same window MainWindowController shows,
