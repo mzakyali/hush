@@ -1,0 +1,58 @@
+name: Hush
+options:
+  bundleIdPrefix: com.local.hush
+  createIntermediateGroups: true
+
+packages:
+  HushKit:
+    path: Packages/HushKit
+
+targets:
+  Hush:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+          - Fonts/**
+      # Folder reference → copied to Contents/Resources/Fonts/
+      # (ATSApplicationFontsPath = Fonts).
+      - path: App/Fonts
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.hush
+        INFOPLIST_FILE: App/Info.plist
+        ARCHS: arm64
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: HushIcon
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+    dependencies:
+      - package: HushKit
+        product: HushCore
+      - package: HushKit
+        product: HotkeyService
+      - package: HushKit
+        product: AudioCapture
+      - package: HushKit
+        product: Transcription
+      - package: HushKit
+        product: Cleanup
+      - package: HushKit
+        product: Dictionary
+      - package: HushKit
+        product: Insertion
+      - package: HushKit
+        product: EditWatcher
+      - package: HushKit
+        product: Media
+      - package: HushKit
+        product: Store
