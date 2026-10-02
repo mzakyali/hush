@@ -20,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Remove the Control Strip item + any modal Touch Bar so no ghost
+    /// item is left behind in TouchBarServer.
+    func applicationWillTerminate(_ notification: Notification) {
+        SharedAppModel.model.touchBar.teardown()
+    }
+
     func applyActivationPolicy() {
         let showInDock = UserDefaults.standard.object(forKey: "showInDock") as? Bool ?? true
         NSApp.setActivationPolicy(showInDock ? .regular : .accessory)

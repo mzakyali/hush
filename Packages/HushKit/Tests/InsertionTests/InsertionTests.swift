@@ -143,9 +143,13 @@ private final class Mutexed<Value>: @unchecked Sendable {
     #expect(adjust("API keys", "word") == " API keys")
     #expect(adjust("iPhone syncs", "word") == " iPhone syncs")
     #expect(adjust("McDonald went", "word") == " McDonald went")
-    // Exact dictionary term (case-sensitive) is protected.
+    // Exact dictionary term (case-sensitive) is protected — trailing
+    // punctuation doesn't defeat it.
     #expect(adjust("Supabase host", "word", ["Supabase"]) == " Supabase host")
+    #expect(adjust("Supabase, hosted", "word", ["Supabase"]) == " Supabase, hosted")
     #expect(adjust("supabase host", "word", ["Supabase"]) == " supabase host")
+    // Trailing punctuation doesn't disqualify an acronym either.
+    #expect(adjust("API, then", "word") == " API, then")
     // Minimal style never touches casing.
     #expect(adjust("Both work", "word", [], .minimal) == " Both work")
     // Unreadable context → unchanged (same fail-safe as the separator).

@@ -50,6 +50,10 @@ struct SettingsView: View {
                 .onChange(of: launchAtLogin) { _, on in
                     try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
                 }
+            // Only Macs with a Touch Bar get the row.
+            if TouchBarController.hardwarePresent {
+                Toggle("Touch Bar controls", isOn: $model.touchBarEnabled)
+            }
         }
     }
 

@@ -100,7 +100,11 @@ public enum InsertionPolicy {
 
         guard let firstWord = text.split(whereSeparator: { $0.isWhitespace }).first
         else { return false }
+        // Edge punctuation doesn't disqualify a word: "Supabase," still
+        // names the term and "API," is still an acronym.
         let word = String(firstWord)
+            .trimmingCharacters(in: .alphanumerics.inverted)
+        guard !word.isEmpty else { return false }
         if word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’") { return false }
         if word.count >= 2, word == word.uppercased() { return false }
         if word.dropFirst().contains(where: { $0.isUppercase }) { return false }

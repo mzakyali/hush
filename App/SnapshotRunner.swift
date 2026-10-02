@@ -144,6 +144,16 @@ enum SnapshotRunner {
 
         feed.overlayState = .hidden
         feed.overlayPhase = .hidden
+
+        // --- Touch Bar wave (plain AppKit view; no window needed) ---
+        let wave = TouchBarWaveView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 30))
+        wave.amplitude = 0.9
+        wave.hotCenter = true
+        renderView(wave, name: "touchbar-wave-recording", in: dir)
+        wave.processing = true
+        renderView(wave, name: "touchbar-wave-processing", in: dir)
+
         print("snapshots → \(dir.path)")
     }
 
@@ -313,6 +323,24 @@ enum SnapshotRunner {
             print("snapshot FAILED: \(name)")
         }
         window.close()
+    }
+
+    /// AppKit view → PNG at 2× (the Touch Bar wave is an NSView, not SwiftUI).
+    private static func renderView(_ view: NSView, scale: CGFloat = 2,
+                                   name: String, in dir: URL) {
+        let bounds = view.bounds
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else {
+            print("snapshot FAILED (no rep): \(name)")
+            return
+        }
+        rep.size = NSSize(width: bounds.width * scale,
+                          height: bounds.height * scale)
+        view.cacheDisplay(in: bounds, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: dir.appending(path: "\(name).png"))
+        } else {
+            print("snapshot FAILED: \(name)")
+        }
     }
 
     private static func render<V: View>(_ view: V, size: CGSize,

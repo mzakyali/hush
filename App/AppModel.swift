@@ -126,6 +126,16 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.object(forKey: "showInMenuBar") as? Bool ?? false {
         didSet { UserDefaults.standard.set(showInMenuBar, forKey: "showInMenuBar") }
     }
+    /// "Touch Bar controls" — Control Strip item + recording bar, default ON.
+    /// Only meaningful on Touch Bar hardware (the Settings row hides on other
+    /// Macs); turning it off removes the tray item and any modal bar.
+    @Published var touchBarEnabled: Bool =
+        UserDefaults.standard.object(forKey: "touchBarEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(touchBarEnabled, forKey: "touchBarEnabled")
+            touchBar.setEnabled(touchBarEnabled)
+        }
+    }
 
     /// Side-panel dot states: pulse while either model is still coming up.
     var modelsLoading: Bool {
@@ -159,6 +169,10 @@ final class AppModel: ObservableObject {
     lazy var overlay = OverlayWindowController(model: self)
     lazy var edgePanel = EdgePanelController(model: self)
     lazy var mainWindow = MainWindowController(model: self)
+    /// Touch Bar Control Strip + system-modal bars (private DFR API).
+    /// No-ops on non-Touch-Bar hardware. Lazy: the controller is @MainActor,
+    /// AppModel's init is not.
+    lazy var touchBar = TouchBarController()
 
     // Microphone priority (spec §4a, plan T12): persisted ordered UIDs + pin.
     // The pipeline's `deviceUIDs` hook reads this store at recording start, so
@@ -339,6 +353,10 @@ final class AppModel: ObservableObject {
 
         // Warm both models in the background, concurrently.
         prepareModels()
+
+        // Touch Bar: Control Strip tray item + recording-bar subscription.
+        // Runs after model/permission setup; a no-op off Touch Bar Macs.
+        touchBar.install(model: self)
 
         #if DEBUG
         startSyntheticLevelsIfRequested()
@@ -584,6 +602,17 @@ final class AppModel: ObservableObject {
     /// the double-tap-⌥ hotkey toggle.
     func toggleDictation() {
         Task { await pipeline.handle(.toggle) }
+    }
+
+    /// The same cancel path Esc takes (keyCode 53 → `.cancel`).
+    func cancelDictation() {
+        Task { await pipeline.handle(.cancel) }
+    }
+
+    /// ⌃⌥Z / Touch Bar "Paste raw" — replace the last insertion with the
+    /// un-cleaned transcript when the target text is unchanged.
+    func pasteRaw() {
+        Task { await pipeline.handle(.pasteRaw) }
     }
 
     // MARK: - Microphone priority (§4a)
