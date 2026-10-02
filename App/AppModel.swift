@@ -2,6 +2,8 @@ import AppKit
 import AudioCapture
 import AVFoundation
 import Cleanup
+import Dictionary
+import EditWatcher
 import HushCore
 import HotkeyService
 import Insertion
@@ -64,6 +66,15 @@ final class AppModel: ObservableObject {
     /// "YYYY-MM-DD" → words, for the Activity heatmap (last 84 days).
     @Published var wordsPerDay: [String: Int] = [:]
     var historySearch = ""   // bound in HistoryView
+
+    // Dictionary (§5) + edit learning (§6). The engine is a plain locked
+    // class — the pipeline's sync `terms`/`replacements` hooks read it
+    // directly; `dictEntries`/`pendingSuggestions` back the UI and refresh
+    // together in `refreshData`.
+    private let replacementEngine = ReplacementEngine()
+    private let editWatcher = EditWatcher()
+    @Published var dictEntries: [DictionaryEntry] = []
+    @Published var pendingSuggestions: [Suggestion] = []
 
     // Permissions.
     struct Permissions {
@@ -173,6 +184,12 @@ final class AppModel: ObservableObject {
         mlxCleaner = innerCleaner
         inserter = Inserter(notify: { message in
             UserNotifications.post(message)
+        }, onPasted: { [editWatcher] text, element, endOffset, pid in
+            // §6 edit learning: watch the element the paste landed in.
+            // No end offset (or pid) → no anchor → skip silently.
+            guard let endOffset, let pid else { return }
+            editWatcher.watch(element: InsertedElement(element), pid: pid,
+                              inserted: text, endOffset: endOffset)
         })
         // Snapshot mode renders UI offscreen against an in-memory store only;
         // the mic store likewise must not write UserDefaults there.
@@ -194,7 +211,12 @@ final class AppModel: ObservableObject {
         // every stored property is initialized — so completion goes through a
         // relay whose body is wired up right after the pipeline exists.
         let finish = FinishRelay()
+        let engine = replacementEngine
         var hooks = PipelineHooks()
+        // §5/T8: dictionary terms feed ASR prompt tokens + the cleanup
+        // {terms} line; replacements run before AND after cleanup.
+        hooks.terms = { engine.dictionaryTerms }
+        hooks.replacements = { engine.apply($0) }
         hooks.deviceUIDs = { mics.candidates() }
         hooks.didFinish = { result in await finish.run(result) }
         // §3.7/T10: resolve the cleanup style against the app captured at
@@ -266,6 +288,13 @@ final class AppModel: ObservableObject {
         Task { [weak self, pipeline] in
             for await update in pipeline.updates {
                 self?.apply(update)
+            }
+        }
+
+        // §6: the watcher reports (from, to) edits → suggestion state machine.
+        Task { [weak self, editWatcher] in
+            await editWatcher.setOnCandidates { pairs in
+                Task { @MainActor in self?.recordObservedEdits(pairs) }
             }
         }
 
@@ -447,6 +476,8 @@ final class AppModel: ObservableObject {
             hotkeys.setRecording(state == .recording)
             switch state {
             case .recording:
+                // A new recording cancels any running edit watch (§6).
+                Task { [editWatcher] in await editWatcher.cancel() }
                 recording.overlayGeneration += 1
                 recording.overlayState = .recording
                 recording.levelHistory = []
@@ -623,6 +654,9 @@ final class AppModel: ObservableObject {
             result.pid.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName }
         }
         do {
+            // Flush the replacement hit counts this dictation accumulated
+            // before persisting, so reloadData sees fresh numbers.
+            try? await store.bumpHitCounts(replacementEngine.takeHits())
             _ = try await store.save(DictationInput(
                 rawText: result.rawText,
                 cleanedText: result.cleanedText,
@@ -653,6 +687,86 @@ final class AppModel: ObservableObject {
         let overrides = (try? await store.styleOverrides()) ?? []
         let historyApps = (try? await store.dictationApps()) ?? []
         styleRows = Self.buildStyleRows(overrides: overrides, historyApps: historyApps)
+        dictEntries = (try? await store.dictionaryEntries()) ?? []
+        pendingSuggestions = (try? await store.suggestions()) ?? []
+        refreshEngine()
+    }
+
+    // MARK: - Dictionary (§5) + edit learning (§6)
+
+    /// Push the entry list into the engine: `from→to` rules (longest first is
+    /// the engine's job) plus the vocabulary (terms + replacement targets)
+    /// that feeds Whisper prompt tokens, the cleanup `{terms}` line, and the
+    /// continuation-casing "is this a protected word" check.
+    private func refreshEngine() {
+        let replacements = dictEntries.filter { $0.kind == "replacement" }
+        var vocab = Set(dictEntries.filter { $0.kind == "term" }.map(\.toText))
+        for r in replacements { vocab.insert(r.toText) }
+        replacementEngine.update(
+            rules: replacements.map {
+                ReplacementRule(entryID: $0.id, from: $0.fromText ?? "", to: $0.toText)
+            },
+            terms: vocab.sorted())
+    }
+
+    /// EditWatcher outcome → store; a second sighting of the same pair
+    /// auto-accepts into a `learned` replacement + term (§6).
+    private func recordObservedEdits(_ pairs: [(from: String, to: String)]) {
+        guard let store else { return }
+        Task {
+            for pair in pairs where pair.from != pair.to {
+                _ = try? await store.recordSuggestion(from: pair.from, to: pair.to)
+            }
+            reloadData()
+        }
+    }
+
+    func addDictionaryTerm(_ text: String, source: String = "manual") {
+        guard let store, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        Task {
+            _ = try? await store.addTerm(text, source: source)
+            reloadData()
+        }
+    }
+
+    func addDictionaryReplacement(from: String, to: String, source: String = "manual") {
+        guard let store else { return }
+        let f = from.trimmingCharacters(in: .whitespaces)
+        let t = to.trimmingCharacters(in: .whitespaces)
+        guard !f.isEmpty, !t.isEmpty else { return }
+        Task {
+            _ = try? await store.addReplacement(from: f, to: t, source: source)
+            reloadData()
+        }
+    }
+
+    func deleteDictionaryEntry(id: String) {
+        guard let store else { return }
+        Task {
+            try? await store.deleteEntry(id: id)
+            reloadData()
+        }
+    }
+
+    func approveSuggestion(id: String) {
+        guard let store else { return }
+        Task {
+            try? await store.approveSuggestion(id: id)
+            reloadData()
+        }
+    }
+
+    func rejectSuggestion(id: String) {
+        guard let store else { return }
+        Task {
+            try? await store.rejectSuggestion(id: id)
+            reloadData()
+        }
+    }
+
+    /// Side-panel / menu-bar "N suggestions" row → Dictionary page.
+    func openDictionary() {
+        openMainWindow(page: .dictionary)
     }
 
     // MARK: - Styles (§3.7 / T10)
@@ -696,7 +810,10 @@ final class AppModel: ObservableObject {
         let workspace = NSWorkspace.shared
         return ids.map { bundleID in
             let url = workspace.urlForApplication(withBundleIdentifier: bundleID)
+            // Not installed (override/history row) → the generic app icon,
+            // not a broken placeholder.
             let icon = url.map { workspace.icon(forFile: $0.path) }
+                ?? workspace.icon(for: .applicationBundle)
             let name = url?.deletingPathExtension().lastPathComponent
                 ?? names[bundleID] ?? bundleID
             let override = overridesByID[bundleID]

@@ -68,4 +68,43 @@ public enum InsertionPolicy {
         guard !closers.contains(first) else { return text }
         return " " + text
     }
+
+    /// D3 context adjustment: leading separator + continuation casing.
+    /// `before` is the ~3 characters preceding the caret (nil = unreadable
+    /// AX context → the text passes through untouched, the same fail-safe
+    /// the separator rule uses).
+    public static func adjustForContext(text: String, before: String?,
+                                        terms: [String],
+                                        style: CleanupStyle) -> String {
+        let body = shouldLowercaseFirst(text: text, before: before,
+                                        terms: terms, style: style)
+            ? text.prefix(1).lowercased() + text.dropFirst()
+            : text
+        return leadingSeparator(before: before?.last, text: body)
+    }
+
+    /// Lowercase a continuation's first character only when every rule
+    /// holds — mid-sentence insertion on the same line, non-minimal style,
+    /// and the first word isn't protected (I/I'…, an acronym, a camel-case
+    /// name, or an exact dictionary term).
+    static func shouldLowercaseFirst(text: String, before: String?,
+                                     terms: [String], style: CleanupStyle) -> Bool {
+        guard style != .minimal, let before else { return false }
+        var tail = before[...]
+        while let last = tail.last, last.isWhitespace {
+            if last.isNewline { return false }   // newline between char and caret
+            tail = tail.dropLast()
+        }
+        guard let lastNonWS = tail.last else { return false }
+        if ".!?…".contains(lastNonWS) { return false }
+
+        guard let firstWord = text.split(whereSeparator: { $0.isWhitespace }).first
+        else { return false }
+        let word = String(firstWord)
+        if word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’") { return false }
+        if word.count >= 2, word == word.uppercased() { return false }
+        if word.dropFirst().contains(where: { $0.isUppercase }) { return false }
+        if terms.contains(word) { return false }
+        return true
+    }
 }

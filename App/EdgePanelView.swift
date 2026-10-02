@@ -324,6 +324,10 @@ struct EdgePanelView: View {
                 statRow("STREAK", model.streakDays == 1 ? "1 day" : "\(model.streakDays) days")
                 statRow("DICTATIONS", model.stats.totalSessions.formatted(.number))
             }
+            // §6: pending edit suggestions — click opens the Dictionary page.
+            if !model.pendingSuggestions.isEmpty {
+                suggestionsRow
+            }
             Spacer(minLength: 0)
             HStack {
                 recordButton(diameter: 36)
@@ -442,6 +446,33 @@ struct EdgePanelView: View {
         let top = Double(words.max() ?? 0)
         guard top > 0 else { return [Double](repeating: 0, count: 7) }
         return words.map { $0 == 0 ? 0 : max(0.2, Double($0) / top) }
+    }
+
+    /// "N suggestions →" row — compact, signal-tinted count, opens Dictionary.
+    private var suggestionsRow: some View {
+        Button { model.openDictionary() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "character.book.closed")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.Color.signal)
+                Text(model.pendingSuggestions.count == 1
+                     ? "1 suggestion — review"
+                     : "\(model.pendingSuggestions.count) suggestions — review")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Color.textSecondary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Theme.Color.textTertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Theme.Color.signalSoft.opacity(0.5),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Edits you made after pasting — approve to teach Hush")
     }
 
     private func statRow(_ label: String, _ value: String) -> some View {

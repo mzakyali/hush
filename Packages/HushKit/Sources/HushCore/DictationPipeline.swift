@@ -111,9 +111,10 @@ public actor DictationPipeline {
     private let hooks: PipelineHooks
 
     private var pumpTasks: [Task<Void, Never>] = []
-    /// Raw + inserted text of the last completed dictation — the ⌃⌥Z paste-raw
-    /// source (the inserter verifies the target before replacing).
-    private var lastUndo: (raw: String, cleaned: String)?
+    /// Raw + inserted text + style of the last completed dictation — the
+    /// ⌃⌥Z paste-raw source (the inserter verifies the target before
+    /// replacing, then applies the same context adjustment with this style).
+    private var lastUndo: (raw: String, cleaned: String, style: CleanupStyle)?
 
     public init(
         recorder: any AudioRecording,
@@ -144,7 +145,9 @@ public actor DictationPipeline {
             // §3.9/T11 — replace the last insertion with the raw transcript.
             // Only while idle; the inserter verifies the target's text first.
             await inserter.replaceLastInsertion(
-                raw: lastUndo?.raw, cleaned: lastUndo?.cleaned)
+                raw: lastUndo?.raw, cleaned: lastUndo?.cleaned,
+                context: InsertionContext(style: lastUndo?.style ?? .default,
+                                          terms: hooks.terms()))
         default:
             // .processing ignores everything (a start arriving then is naturally
             // queued by the actor); idle ignores stray holdEnd/cancel.
@@ -207,9 +210,10 @@ public actor DictationPipeline {
             // recording stops — capture before transcription, which can take seconds.
             let target = await inserter.captureTarget()
             let style = await hooks.style(target.bundleID)
+            let dictTerms = hooks.terms()
 
             let asrStart = Date()
-            let transcript = try await transcriber.transcribe(audio.buffer, prompt: hooks.terms())
+            let transcript = try await transcriber.transcribe(audio.buffer, prompt: dictTerms)
             let asrSec = Date().timeIntervalSince(asrStart)
 
             let raw = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -221,7 +225,7 @@ public actor DictationPipeline {
 
             let cleanStart = Date()
             var text = hooks.replacements(transcript.text)
-            text = try await cleaner.clean(text, style: style, terms: hooks.terms())
+            text = try await cleaner.clean(text, style: style, terms: dictTerms)
             let cleanSec = Date().timeIntervalSince(cleanStart)
             var fellBack = false
             if let reporting = cleaner as? FallbackReportingCleaner {
@@ -230,7 +234,9 @@ public actor DictationPipeline {
             text = hooks.replacements(text)
 
             let insertStart = Date()
-            let outcome = try await inserter.insert(text, target: target)
+            let outcome = try await inserter.insert(
+                text, target: target,
+                context: InsertionContext(style: style, terms: dictTerms))
             let insertSec = Date().timeIntervalSince(insertStart)
             let totalSec = Date().timeIntervalSince(stopAt)
 
@@ -240,7 +246,7 @@ public actor DictationPipeline {
 
             let copied: Bool
             if case .copiedToClipboard = outcome { copied = true } else { copied = false }
-            lastUndo = (raw: raw, cleaned: text)
+            lastUndo = (raw: raw, cleaned: text, style: style)
             emit(.inserted(text: text, copiedToClipboard: copied, cleanupFallback: fellBack))
             await hooks.didFinish(DictationResult(
                 rawText: transcript.text, cleanedText: text, style: style,

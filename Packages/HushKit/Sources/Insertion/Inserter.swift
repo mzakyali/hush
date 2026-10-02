@@ -29,17 +29,25 @@ public actor Inserter: Inserting {
 
     /// The last `.pasted` result — needed by paste-raw undo (T11) and EditWatcher (T9).
     public private(set) var lastInsertion: InsertionResult?
-    /// Exactly what the last paste wrote (leading separator + cleaned text) —
+    /// Exactly what the last paste wrote (leading separator + adjusted text) —
     /// ⌃⌥Z verifies this byte-for-byte before replacing. nil on clipboard results.
     private var lastPastedText: String?
+
+    /// Fired once per successful `.pasted` insertion: the text actually
+    /// written, the element it went into, the caret's UTF-16 offset after
+    /// the paste (nil when AX can't answer → caller skips), and the pid.
+    /// EditWatcher hangs its observation off this.
+    private let onPasted: (@Sendable (String, AXUIElement, Int?, pid_t?) -> Void)?
 
     public init(
         pasteboard: PasteboardRef = .general,
         frontmostApp: (@Sendable () -> (bundleID: String?, pid: pid_t?))? = nil,
         focusedElementProvider: (@Sendable () -> AXUIElement?)? = nil,
         secureEventInputProvider: (@Sendable () -> Bool)? = nil,
-        notify: (@Sendable (String) -> Void)? = nil
+        notify: (@Sendable (String) -> Void)? = nil,
+        onPasted: (@Sendable (String, AXUIElement, Int?, pid_t?) -> Void)? = nil
     ) {
+        self.onPasted = onPasted
         self.pasteboardRef = pasteboard
         self.frontmostApp = frontmostApp ?? {
             let app = NSWorkspace.shared.frontmostApplication
@@ -72,7 +80,8 @@ public actor Inserter: Inserting {
         )
     }
 
-    public func insert(_ text: String, target: InsertionTarget) async throws -> InsertionResult {
+    public func insert(_ text: String, target: InsertionTarget,
+                       context: InsertionContext) async throws -> InsertionResult {
         // The spec target is the app focused when recording stopped; if the user has
         // switched since, pasting would land in the wrong app — copy instead.
         let now = frontmostApp()
@@ -88,10 +97,15 @@ public actor Inserter: Inserting {
 
         switch decision {
         case .paste:
-            // Smart leading space: look at the character before the caret. If
-            // AX can't answer (Electron, terminals, secure fields), insert as-is.
-            let before = target.element.flatMap { Self.characterBeforeCaret($0.element) }
-            let adjusted = InsertionPolicy.leadingSeparator(before: before, text: text)
+            // Context adjustment: separator + continuation casing from the
+            // ~3 chars before the caret (D3). If AX can't answer (Electron,
+            // terminals, secure fields), the text goes in unchanged.
+            let before = target.element.flatMap {
+                Self.contextBeforeCaret($0.element, length: 3)
+            }
+            let adjusted = InsertionPolicy.adjustForContext(
+                text: text, before: before,
+                terms: context.terms, style: context.style)
             await paste(adjusted)
             let result = InsertionResult.pasted(
                 appBundleID: target.bundleID,
@@ -100,6 +114,10 @@ public actor Inserter: Inserting {
             )
             lastInsertion = result
             lastPastedText = adjusted
+            if let element = target.element {
+                onPasted?(adjusted, element.element,
+                          Self.selectionEnd(of: element.element), target.pid)
+            }
             return result
         case .copyToClipboard:
             return copyToClipboard(text, notify: "Copied to clipboard")
@@ -128,7 +146,8 @@ public actor Inserter: Inserting {
     /// ⌃⌥Z: replace the last pasted insertion with the raw transcript — only
     /// when the target element still contains exactly what we pasted. All
     /// outcomes land on the notification path; never throws.
-    public func replaceLastInsertion(raw: String?, cleaned: String?) async {
+    public func replaceLastInsertion(raw: String?, cleaned: String?,
+                                     context: InsertionContext) async {
         var element: AXUIElement?
         var caret: Int?
         var inserted: String?
@@ -143,8 +162,18 @@ public actor Inserter: Inserting {
             element.flatMap { Self.string(in: range, of: $0) }
         }
         switch action {
-        case .replace(let range, let text):
+        case .replace(let range, let raw):
             if let element { Self.select(range, of: element) }
+            // Same context adjustment the original paste got — separator +
+            // continuation casing — applied to the raw text this time.
+            let before = element.flatMap {
+                Self.string(in: NSRange(location: max(0, range.location - 3),
+                                        length: min(3, range.location)),
+                            of: $0)
+            }
+            let text = InsertionPolicy.adjustForContext(
+                text: raw, before: before,
+                terms: context.terms, style: context.style)
             await paste(text)
             lastPastedText = text
             if case .pasted(let bundleID, let el, _) = lastInsertion {
@@ -200,11 +229,11 @@ public actor Inserter: Inserting {
         return (value as! AXUIElement)
     }
 
-    /// The character immediately before the caret (or selection start) — feeds
-    /// smart leading-space insertion. Returns nil whenever AX can't answer
-    /// (Electron/Slack, terminals, secure fields, caret at position 0); the
-    /// caller then inserts the text unchanged.
-    static func characterBeforeCaret(_ element: AXUIElement) -> Character? {
+    /// Up to `length` characters before the caret (or selection start) —
+    /// feeds the separator + continuation-casing decisions (D3). Returns nil
+    /// whenever AX can't answer (Electron/Slack, terminals, secure fields,
+    /// caret at position 0); the caller then inserts the text unchanged.
+    static func contextBeforeCaret(_ element: AXUIElement, length: Int = 3) -> String? {
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, &rangeValue
@@ -216,18 +245,18 @@ public actor Inserter: Inserting {
               range.location > 0
         else { return nil }
 
-        // Precise path: ask the element for the string in the 1-char range
+        let width = min(length, range.location)
+        // Precise path: ask the element for the string in the range
         // before the caret.
-        var previous = CFRange(location: range.location - 1, length: 1)
+        var previous = CFRange(location: range.location - width, length: width)
         if let rangeObject = AXValueCreate(.cfRange, &previous) {
             var stringValue: CFTypeRef?
             if AXUIElementCopyParameterizedAttributeValue(
                 element, kAXStringForRangeParameterizedAttribute as CFString,
                 rangeObject, &stringValue
             ) == .success,
-                let string = stringValue as? String,
-                let ch = string.first {
-                return ch
+                let string = stringValue as? String {
+                return string
             }
         }
 
@@ -241,8 +270,8 @@ public actor Inserter: Inserting {
             let whole = wholeValue as? String
         else { return nil }
         let ns = whole as NSString
-        guard range.location - 1 < ns.length else { return nil }
-        return Character(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
+        guard range.location - width >= 0 else { return nil }
+        return ns.substring(with: NSRange(location: range.location - width, length: width))
     }
 
     /// Selection end — the caret position as a UTF-16 offset — for paste-raw's

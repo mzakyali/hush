@@ -82,7 +82,7 @@ struct StylesView: View {
         let card: Card
         init(_ card: Card) { self.card = card }
         var body: some View {
-            Tile(card.title.uppercased()) {
+            Tile(card.title.uppercased(), fillHeight: true) {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     Text(card.blurb)
                         .font(Theme.Font.caption)

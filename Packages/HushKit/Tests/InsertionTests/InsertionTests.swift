@@ -120,6 +120,42 @@ private final class Mutexed<Value>: @unchecked Sendable {
     #expect(InsertionPolicy.leadingSeparator(before: "d", text: "") == "")
 }
 
+// MARK: - context adjustment (D3: separator + continuation casing)
+
+@Test func adjustForContextCasingTable() {
+    func adjust(_ text: String, _ before: String?, _ terms: [String] = [],
+                _ style: CleanupStyle = .default) -> String {
+        InsertionPolicy.adjustForContext(text: text, before: before,
+                                         terms: terms, style: style)
+    }
+    // Mid-sentence continuation → lowercased (separator still applies).
+    #expect(adjust("Both work", "word") == " both work")
+    #expect(adjust("Both work", "ord,") == " both work")   // after comma
+    // After a sentence terminator → casing kept.
+    #expect(adjust("Both work", "ord.") == " Both work")
+    #expect(adjust("Both work", "…") == " Both work")
+    // Newline between the char and caret → kept (and no separator).
+    #expect(adjust("Both work", "d\n") == "Both work")
+    #expect(adjust("Both work", "d\n ") == "Both work")
+    // Protected first words.
+    #expect(adjust("I think", "word") == " I think")
+    #expect(adjust("I've seen", "word") == " I've seen")
+    #expect(adjust("API keys", "word") == " API keys")
+    #expect(adjust("iPhone syncs", "word") == " iPhone syncs")
+    #expect(adjust("McDonald went", "word") == " McDonald went")
+    // Exact dictionary term (case-sensitive) is protected.
+    #expect(adjust("Supabase host", "word", ["Supabase"]) == " Supabase host")
+    #expect(adjust("supabase host", "word", ["Supabase"]) == " supabase host")
+    // Minimal style never touches casing.
+    #expect(adjust("Both work", "word", [], .minimal) == " Both work")
+    // Unreadable context → unchanged (same fail-safe as the separator).
+    #expect(adjust("Both work", nil) == "Both work")
+    // Indonesian continuation.
+    #expect(adjust("Dan itu bekerja", "word") == " dan itu bekerja")
+    // Already lowercase → separator only.
+    #expect(adjust("both work", "word") == " both work")
+}
+
 // MARK: - paste-raw decision (spec §3.9, T11)
 
 @Test func pasteRawReplacesWhenRangeMatches() {
@@ -131,9 +167,10 @@ private final class Mutexed<Value>: @unchecked Sendable {
     ) { range in
         range == NSRange(location: 7, length: 13) ? " cleaned text" : "wrong"
     }
-    // Replacement keeps the separator: " raw text".
+    // The raw text comes back — the inserter context-adjusts it (separator +
+    // casing) against the real ~3 chars before the range.
     #expect(action == .replace(range: NSRange(location: 7, length: 13),
-                               text: " raw text"))
+                               raw: "raw text"))
 }
 
 @Test func pasteRawNoSeparatorWhenCleanedHadNone() {
@@ -144,7 +181,7 @@ private final class Mutexed<Value>: @unchecked Sendable {
         range == NSRange(location: 0, length: 7) ? "cleaned" : nil
     }
     #expect(action == .replace(range: NSRange(location: 0, length: 7),
-                               text: "um raw"))
+                               raw: "um raw"))
 }
 
 @Test func pasteRawChangedTextRefuses() {
@@ -253,7 +290,8 @@ private final class Mutexed<Value>: @unchecked Sendable {
     )
 
     let target = await inserter.captureTarget()
-    let result = try await inserter.insert("dictated text", target: target)
+    let result = try await inserter.insert("dictated text", target: target,
+                                           context: InsertionContext())
     guard case .copiedToClipboard = result else {
         Issue.record("expected .copiedToClipboard, got \(result)")
         return
@@ -280,7 +318,8 @@ private final class Mutexed<Value>: @unchecked Sendable {
     // User switches apps before the pipeline finishes processing.
     frontmost.withLock { $0 = ("com.example.other", 200) }
 
-    let result = try await inserter.insert("dictated text", target: target)
+    let result = try await inserter.insert("dictated text", target: target,
+                                           context: InsertionContext())
     guard case .copiedToClipboard = result else {
         Issue.record("expected .copiedToClipboard, got \(result)")
         return
@@ -301,7 +340,8 @@ private final class Mutexed<Value>: @unchecked Sendable {
         notify: { _ in }
     )
     let target = await inserter.captureTarget()
-    let result = try await inserter.insert("pasted text", target: target)
+    let result = try await inserter.insert("pasted text", target: target,
+                                           context: InsertionContext())
     guard case .pasted = result else {
         Issue.record("expected .pasted, got \(result)")
         return

@@ -76,16 +76,31 @@ public enum InsertionResult: Sendable {
     case copiedToClipboard
 }
 
+/// Vocabulary + style the inserter needs for D3 context adjustment:
+/// continuation casing and the leading separator, applied to the text
+/// actually written (never to history).
+public struct InsertionContext: Sendable {
+    public var style: CleanupStyle
+    public var terms: [String]
+    public init(style: CleanupStyle = .default, terms: [String] = []) {
+        self.style = style
+        self.terms = terms
+    }
+}
+
 /// Implemented by `Insertion.Inserter`.
 public protocol Inserting: Sendable {
     /// Snapshot the frontmost app's pid, bundle id and focused element.
     func captureTarget() async -> InsertionTarget
     /// Paste into `target`, or leave the text on the clipboard if the user switched
     /// apps since capture or no safe target exists.
-    func insert(_ text: String, target: InsertionTarget) async throws -> InsertionResult
+    func insert(_ text: String, target: InsertionTarget,
+                context: InsertionContext) async throws -> InsertionResult
     /// ⌃⌥Z paste-raw (spec §3.9/T11): replace the last pasted insertion with
-    /// `raw` when the target still contains exactly what was inserted.
+    /// `raw` when the target still contains exactly what was inserted —
+    /// context-adjusted the same way the original paste was.
     /// `raw`/`cleaned` are the last dictation's texts (nil = none yet).
     /// Failure paths notify the user; never throws.
-    func replaceLastInsertion(raw: String?, cleaned: String?) async
+    func replaceLastInsertion(raw: String?, cleaned: String?,
+                              context: InsertionContext) async
 }

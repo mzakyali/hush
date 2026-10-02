@@ -17,6 +17,13 @@ struct MenuBarView: View {
         if let error = model.lastError {
             Text(error).foregroundStyle(.red)
         }
+        if !model.pendingSuggestions.isEmpty {
+            Button(model.pendingSuggestions.count == 1
+                   ? "1 suggestion — review in Dictionary"
+                   : "\(model.pendingSuggestions.count) suggestions — review in Dictionary") {
+                model.openDictionary()
+            }
+        }
         Divider()
         // §4a: Automatic + connected devices; a pick pins the device until it
         // disconnects or Automatic is chosen again.

@@ -35,10 +35,14 @@ enum SnapshotRunner {
         model.permissions = AppModel.Permissions()
         capturePage(.home, model: model, name: "home-empty", in: dir)
         capturePage(.history, model: model, name: "history-empty", in: dir)
+        capturePage(.dictionary, model: model, name: "dictionary-empty", in: dir)
 
         // --- seed fake data ---
         await seed(model: model)
         await model.refreshData()
+        // Pending suggestions feed Dictionary's SUGGESTIONS section and the
+        // edge-expanded-suggestions variant; edge renders below start clean.
+        let seededSuggestions = model.pendingSuggestions
 
         // Grant-access flow states — all permissions missing. Taller windows
         // so the Permissions section / System tile isn't below the fold.
@@ -76,9 +80,14 @@ enum SnapshotRunner {
                     name: "history-expanded-diff", in: dir)
 
         // --- side panel: resting summary, details, and desktop/edge placements ---
+        model.pendingSuggestions = []
         renderEdge(model: model, expanded: false, name: "edge-collapsed", in: dir)
         renderEdge(model: model, expanded: false, sliver: true, name: "edge-sliver", in: dir)
         renderEdge(model: model, expanded: true, name: "edge-expanded", in: dir)
+        // §6: the "N suggestions" row variant.
+        model.pendingSuggestions = seededSuggestions
+        renderEdge(model: model, expanded: true, name: "edge-expanded-suggestions", in: dir)
+        model.pendingSuggestions = []
         renderEdge(model: model, expanded: false, attachment: .left, name: "edge-left", in: dir)
         renderEdge(model: model, expanded: false, attachment: .floating, name: "edge-floating", in: dir)
         renderEdge(model: model, expanded: false, reducedMotion: true, name: "edge-reduced-motion", in: dir)
@@ -196,6 +205,19 @@ enum SnapshotRunner {
         // One style override so the Styles page shows an overrode row (↺).
         try? await store.setStyleOverride(bundleID: "com.apple.Notes",
                                           appName: "Notes", style: "casual")
+
+        // Dictionary (§5): terms + replacements across all three sources,
+        // a nonzero hit count, and two pending suggestions (§6) for the
+        // SUGGESTIONS section + the edge-expanded-suggestions panel variant.
+        _ = try? await store.addTerm("Supabase", source: "manual")
+        _ = try? await store.addTerm("tokopedia", source: "history")
+        let rule = try? await store.addReplacement(
+            from: "super base", to: "Supabase", source: "manual")
+        _ = try? await store.addReplacement(from: "teh", to: "the", source: "history")
+        _ = try? await store.addReplacement(from: "hush", to: "Hush", source: "learned")
+        if let rule { try? await store.bumpHitCounts([rule.id: 3]) }
+        _ = try? await store.recordSuggestion(from: "supa base", to: "Supabase")
+        _ = try? await store.recordSuggestion(from: "gak", to: "nggak")
     }
 
     /// A device list for snapshots: internal + AirPods connected, a USB mic

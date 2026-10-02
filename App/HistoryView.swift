@@ -11,6 +11,9 @@ struct HistoryView: View {
     @State private var search = ""
     @State private var expandedID: String?
     @State private var pendingDelete: Dictation?
+    /// "Add replacement…" draft for a word in the expanded card (§5).
+    @State private var replacementDraftFrom: String?
+    @State private var replacementDraftTo = ""
 
     init(model: AppModel, initialExpandedID: String? = nil) {
         self.model = model
@@ -170,33 +173,40 @@ struct HistoryView: View {
     /// raw text, the dot-matrix player and the action row.
     private func expandedCard(_ record: Dictation) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            Button {
-                withAnimation(Theme.Motion.response(reduceMotion)) { expandedID = nil }
-            } label: {
-                HStack(alignment: .top, spacing: Theme.Space.m) {
-                    Text(HomeView.time(record.createdAt))
-                        .font(Theme.Font.data(12))
-                        .foregroundStyle(Theme.Color.textTertiary)
-                        .frame(width: 44, alignment: .leading)
-                    if let icon = HomeView.appIcon(record.appBundleID) {
-                        icon
-                            .resizable()
-                            .frame(width: 16, height: 16)
-                    } else {
-                        Image(systemName: "app.fill")
-                            .font(.system(size: 13))
+            HStack(alignment: .top, spacing: Theme.Space.m) {
+                Button {
+                    withAnimation(Theme.Motion.response(reduceMotion)) { expandedID = nil }
+                } label: {
+                    HStack(alignment: .top, spacing: Theme.Space.m) {
+                        Text(HomeView.time(record.createdAt))
+                            .font(Theme.Font.data(12))
                             .foregroundStyle(Theme.Color.textTertiary)
-                            .frame(width: 16, height: 16)
+                            .frame(width: 44, alignment: .leading)
+                        if let icon = HomeView.appIcon(record.appBundleID) {
+                            icon
+                                .resizable()
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: "app.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.Color.textTertiary)
+                                .frame(width: 16, height: 16)
+                        }
                     }
-                    Text(record.cleanedText)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Color.textPrimary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.plain)
+                // Each word carries its own context menu (§5): right-click a
+                // word → "Add as term" / "Add replacement…" (source: history).
+                // Not part of the collapse button so the menu + per-word
+                // text selection work.
+                wordFlow(record)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+
+            if let draftFrom = replacementDraftFrom {
+                replacementDraft(from: draftFrom)
+                    .padding(.leading, 44 + Theme.Space.m + 16)
+            }
 
             VStack(alignment: .leading, spacing: Theme.Space.m) {
                 // Raw and cleaned are identical most of the time — Whisper's
@@ -232,6 +242,67 @@ struct HistoryView: View {
         .padding(Theme.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.Color.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+    }
+
+    /// The cleaned text as a wrapping flow of selectable words; each word
+    /// gets the §5 context menu (entries land with `source: history`).
+    private func wordFlow(_ record: Dictation) -> some View {
+        WordsFlow(spacing: 0) {
+            ForEach(Array(record.cleanedText
+                    .split(whereSeparator: { $0.isWhitespace })
+                    .enumerated()), id: \.offset) { _, token in
+                let word = String(token)
+                Text(word)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Color.textPrimary)
+                    .textSelection(.enabled)
+                    .padding(.trailing, 4)
+                    .contextMenu {
+                        let cleaned = word.trimmingCharacters(in: .alphanumerics.inverted)
+                        Button("Add as term") {
+                            model.addDictionaryTerm(cleaned, source: "history")
+                        }
+                        .disabled(cleaned.isEmpty)
+                        Button("Add replacement…") {
+                            replacementDraftFrom = cleaned
+                            replacementDraftTo = ""
+                        }
+                        .disabled(cleaned.isEmpty)
+                    }
+            }
+        }
+    }
+
+    /// Inline "from → [to]" editor opened by a word's "Add replacement…".
+    private func replacementDraft(from: String) -> some View {
+        HStack(spacing: Theme.Space.s) {
+            Text(from)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Color.textSecondary)
+            Text("→").foregroundStyle(Theme.Color.textTertiary)
+            TextField("replacement", text: $replacementDraftTo)
+                .textFieldStyle(.plain)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Color.textPrimary)
+                .padding(.horizontal, Theme.Space.s)
+                .frame(width: 160, height: 28)
+                .background(Theme.Color.tile,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+                .onSubmit { submitReplacementDraft() }
+            Button("Add") { submitReplacementDraft() }
+                .buttonStyle(.hushSecondary)
+                .disabled(replacementDraftTo.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel") { replacementDraftFrom = nil }
+                .buttonStyle(.hushGhost)
+        }
+    }
+
+    private func submitReplacementDraft() {
+        guard let from = replacementDraftFrom, !from.isEmpty else { return }
+        model.addDictionaryReplacement(from: from, to: replacementDraftTo,
+                                       source: "history")
+        replacementDraftFrom = nil
+        replacementDraftTo = ""
     }
 
     /// Shown when raw == cleaned: the LLM wasn't needed, or it fell back.

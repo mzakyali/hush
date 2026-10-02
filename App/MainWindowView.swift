@@ -156,10 +156,7 @@ struct MainWindowView: View {
         case .history:
             HistoryView(model: model, initialExpandedID: initialExpandedID)
         case .dictionary:
-            PlaceholderPage(
-                title: "Dictionary",
-                text: "Your personal terms and text replacements will live here — Hush will learn how you spell names and jargon."
-            )
+            DictionaryView(model: model)
         case .styles:
             StylesView(model: model)
         case .settings:

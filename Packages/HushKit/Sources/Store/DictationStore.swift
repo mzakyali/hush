@@ -52,6 +52,54 @@ public struct DictationStats: Sendable, Equatable {
     }
 }
 
+/// One `dictionary_entries` row (§5): a term (`fromText` nil) or a
+/// replacement (`fromText` → `toText`), with provenance + hit count.
+public struct DictionaryEntry: Sendable, Equatable, Identifiable {
+    public var id: String
+    /// 'term' | 'replacement' — matches the `kind` column.
+    public var kind: String
+    public var fromText: String?
+    public var toText: String
+    /// 'manual' | 'learned' | 'history'.
+    public var source: String
+    public var createdAt: Date
+    public var hitCount: Int
+
+    public init(id: String, kind: String, fromText: String?, toText: String,
+                source: String, createdAt: Date, hitCount: Int) {
+        self.id = id; self.kind = kind; self.fromText = fromText
+        self.toText = toText; self.source = source
+        self.createdAt = createdAt; self.hitCount = hitCount
+    }
+}
+
+/// One `suggestions` row (§6): an edit the user made to pasted text.
+public struct Suggestion: Sendable, Equatable, Identifiable {
+    public var id: String
+    public var fromText: String
+    public var toText: String
+    public var seenCount: Int
+    /// 'pending' | 'accepted' | 'rejected'.
+    public var status: String
+    public var lastSeenAt: Date
+
+    public init(id: String, fromText: String, toText: String, seenCount: Int,
+                status: String, lastSeenAt: Date) {
+        self.id = id; self.fromText = fromText; self.toText = toText
+        self.seenCount = seenCount; self.status = status; self.lastSeenAt = lastSeenAt
+    }
+}
+
+/// What `recordSuggestion` did with one observed edit (§6).
+public enum SuggestionOutcome: Sendable, Equatable {
+    /// First sighting — the user can approve/reject it.
+    case pending
+    /// Second sighting — auto-accepted as a `learned` replacement + term.
+    case autoAccepted
+    /// Already rejected or accepted — never resurfaces.
+    case ignored
+}
+
 /// One row of `app_styles` — a user override, or (for `dictationApps()`)
 /// a bundleID/name pair seen in history with `style` empty.
 public struct AppStyleOverride: Sendable, Equatable {
@@ -362,6 +410,155 @@ public actor DictationStore {
     /// exposed for tests simulating a pre-aggregation database.
     func backfillDailyStats() throws {
         try db.write { db in try Self.backfillDailyStats(db) }
+    }
+
+    // MARK: - dictionary (§5 / T8)
+
+    /// Add a term (ASR + cleanup vocabulary). Idempotent on `toText`.
+    @discardableResult
+    public func addTerm(_ text: String, source: String = "manual") throws -> DictionaryEntry {
+        try db.write { db in
+            try Self.insertEntry(db, kind: "term", fromText: nil, toText: text, source: source)
+        }
+    }
+
+    /// Add/update a replacement — one rule per `fromText` (an existing rule
+    /// with the same `from` gets its `to`/source updated, hits preserved).
+    @discardableResult
+    public func addReplacement(from: String, to: String,
+                               source: String = "manual") throws -> DictionaryEntry {
+        try db.write { db in
+            try Self.insertEntry(db, kind: "replacement", fromText: from, toText: to, source: source)
+        }
+    }
+
+    private static func insertEntry(_ db: Database, kind: String, fromText: String?,
+                                    toText: String, source: String) throws -> DictionaryEntry {
+        let matchClause = kind == "term"
+            ? "kind = 'term' AND toText = ?" : "kind = 'replacement' AND fromText = ?"
+        let matchArg: String = kind == "term" ? toText : fromText ?? toText
+        if let row = try Row.fetchOne(db, sql: """
+            SELECT * FROM dictionary_entries WHERE \(matchClause)
+            """, arguments: [matchArg]) {
+            try db.execute(sql: """
+                UPDATE dictionary_entries SET toText = ?, source = ? WHERE id = ?
+                """, arguments: [toText, source, row["id"] as String])
+            return Self.entry(row)
+        }
+        let id = UUID().uuidString
+        let now = Date().timeIntervalSince1970
+        try db.execute(sql: """
+            INSERT INTO dictionary_entries (id, kind, fromText, toText, source, createdAt, hitCount)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+            """, arguments: [id, kind, fromText, toText, source, now])
+        return DictionaryEntry(id: id, kind: kind, fromText: fromText, toText: toText,
+                               source: source, createdAt: Date(timeIntervalSince1970: now),
+                               hitCount: 0)
+    }
+
+    public func deleteEntry(id: String) throws {
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM dictionary_entries WHERE id = ?",
+                           arguments: [id])
+        }
+    }
+
+    public func dictionaryEntries(kind: String? = nil) throws -> [DictionaryEntry] {
+        try db.read { db in
+            let sql = kind.map {
+                "SELECT * FROM dictionary_entries WHERE kind = '\($0)' ORDER BY createdAt"
+            } ?? "SELECT * FROM dictionary_entries ORDER BY createdAt"
+            return try Row.fetchAll(db, sql: sql).map(Self.entry)
+        }
+    }
+
+    /// Bump `hitCount` by id — the engine reports which rules fired.
+    public func bumpHitCounts(_ counts: [String: Int]) throws {
+        guard !counts.isEmpty else { return }
+        try db.write { db in
+            for (id, count) in counts where count > 0 {
+                try db.execute(sql: """
+                    UPDATE dictionary_entries SET hitCount = hitCount + ? WHERE id = ?
+                    """, arguments: [count, id])
+            }
+        }
+    }
+
+    private static func entry(_ row: Row) -> DictionaryEntry {
+        DictionaryEntry(id: row["id"], kind: row["kind"], fromText: row["fromText"],
+                        toText: row["toText"], source: row["source"],
+                        createdAt: Date(timeIntervalSince1970: row["createdAt"]),
+                        hitCount: row["hitCount"])
+    }
+
+    // MARK: - suggestions (§6 / T9)
+
+    /// EditWatcher reports a user edit `from → to`. Seen once → pending; seen
+    /// twice → auto-accept as a `learned` replacement + add `to` as a term;
+    /// rejected pairs never resurface. One transaction.
+    @discardableResult
+    public func recordSuggestion(from: String, to: String, at now: Date = Date()) throws
+        -> SuggestionOutcome {
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO suggestions (id, fromText, toText, seenCount, status, lastSeenAt)
+                VALUES (?, ?, ?, 1, 'pending', ?)
+                ON CONFLICT(fromText, toText) DO UPDATE SET
+                    seenCount = seenCount + 1, lastSeenAt = excluded.lastSeenAt
+                """, arguments: [UUID().uuidString, from, to, now.timeIntervalSince1970])
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT id, seenCount, status FROM suggestions
+                WHERE fromText = ? AND toText = ?
+                """, arguments: [from, to]) else { return .pending }
+            let status: String = row["status"]
+            guard status == "pending" else { return .ignored }
+            let seen: Int = row["seenCount"]
+            guard seen >= 2 else { return .pending }
+            try Self.acceptSuggestion(db, id: row["id"], from: from, to: to)
+            return .autoAccepted
+        }
+    }
+
+    /// Approve a pending suggestion → becomes a `learned` replacement + term.
+    public func approveSuggestion(id: String) throws {
+        try db.write { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT fromText, toText, status FROM suggestions WHERE id = ?
+                """, arguments: [id]), (row["status"] as String) == "pending" else { return }
+            try Self.acceptSuggestion(db, id: id,
+                                      from: row["fromText"], to: row["toText"])
+        }
+    }
+
+    public func rejectSuggestion(id: String) throws {
+        try db.write { db in
+            try db.execute(sql: """
+                UPDATE suggestions SET status = 'rejected' WHERE id = ?
+                """, arguments: [id])
+        }
+    }
+
+    private static func acceptSuggestion(_ db: Database, id: String,
+                                         from: String, to: String) throws {
+        try db.execute(sql: """
+            UPDATE suggestions SET status = 'accepted' WHERE id = ?
+            """, arguments: [id])
+        _ = try insertEntry(db, kind: "replacement", fromText: from, toText: to,
+                            source: "learned")
+        _ = try insertEntry(db, kind: "term", fromText: nil, toText: to, source: "learned")
+    }
+
+    public func suggestions(status: String = "pending") throws -> [Suggestion] {
+        try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM suggestions WHERE status = ? ORDER BY lastSeenAt DESC
+                """, arguments: [status]).map { row in
+                    Suggestion(id: row["id"], fromText: row["fromText"],
+                               toText: row["toText"], seenCount: row["seenCount"],
+                               status: row["status"],
+                               lastSeenAt: Date(timeIntervalSince1970: row["lastSeenAt"]))
+                }
+        }
     }
 
     // MARK: - read

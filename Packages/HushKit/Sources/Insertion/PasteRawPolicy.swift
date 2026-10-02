@@ -4,9 +4,10 @@ import Foundation
 /// AX reads and supplies them here, so the whole policy is unit-testable.
 public enum PasteRawPolicy {
     public enum Action: Equatable, Sendable {
-        /// Select `range` on the element (UTF-16 offsets), then paste `text`
-        /// through the normal pasteboard path — ⌘V replaces the selection.
-        case replace(range: NSRange, text: String)
+        /// Select `range` on the element (UTF-16 offsets), then paste `raw`
+        /// — context-adjusted (separator + casing) by the caller, the same
+        /// way the original paste was — through the normal pasteboard path.
+        case replace(range: NSRange, raw: String)
         case notify(String)
     }
 
@@ -40,11 +41,10 @@ public enum PasteRawPolicy {
               found == inserted else {
             return .notify("Can't replace — text was changed")
         }
-        // Keep the same leading separator the cleaned insert used (≤ 1 char —
-        // InsertionPolicy only ever prepends a single space).
-        let separatorLength = inserted.utf16.count - cleaned.utf16.count
-        let separator = separatorLength > 0 ? String(inserted.prefix(1)) : ""
+        // The caller reads the ~3 chars before `range` and runs the raw
+        // text through `InsertionPolicy.adjustForContext`, so the paste-raw
+        // gets the same separator + continuation casing as the original.
         return .replace(range: NSRange(location: location, length: length),
-                        text: separator + raw)
+                        raw: raw)
     }
 }

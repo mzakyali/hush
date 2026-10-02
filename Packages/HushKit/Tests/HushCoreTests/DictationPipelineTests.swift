@@ -44,6 +44,7 @@ actor FakeTranscriber: Transcriber {
     var delay: TimeInterval = 0
     var onTranscribe: (@Sendable () -> Void)?
     private(set) var transcribeCount = 0
+    private(set) var lastPrompt: [String] = []
     func setDelay(_ d: TimeInterval) { delay = d }
     func setTranscript(_ t: String) { transcriptText = t }
     func setOnTranscribe(_ f: (@Sendable () -> Void)?) { onTranscribe = f }
@@ -51,6 +52,7 @@ actor FakeTranscriber: Transcriber {
     func prepare() async throws {}
     func transcribe(_ audio: AudioBuffer16k, prompt: [String]) async throws -> Transcript {
         transcribeCount += 1
+        lastPrompt = prompt
         onTranscribe?()
         if delay > 0 { try await Task.sleep(nanoseconds: UInt64(delay * 1e9)) }
         return Transcript(text: transcriptText, language: "en")
@@ -70,12 +72,14 @@ actor FakeCleaner: FallbackReportingCleaner {
     private(set) var lastCleanupFellBack = false
     private(set) var cleanCount = 0
     private(set) var lastStyle: CleanupStyle?
+    private(set) var lastTerms: [String] = []
     func setFellBack(_ v: Bool) { fellBack = v }
 
     func prepare() async throws {}
     func clean(_ raw: String, style: CleanupStyle, terms: [String]) async throws -> String {
         cleanCount += 1
         lastStyle = style
+        lastTerms = terms
         if delay > 0 { try await Task.sleep(nanoseconds: UInt64(delay * 1e9)) }
         lastCleanupFellBack = fellBack
         return fellBack ? raw : "cleaned: \(raw)"
@@ -91,6 +95,8 @@ actor FakeInserter: Inserting {
     private(set) var capturedTargets: [InsertionTarget] = []
     /// (raw, cleaned) pairs the pipeline asked to paste over the last insertion.
     private(set) var replaceCalls: [(raw: String?, cleaned: String?)] = []
+    /// The insertion context of the last paste (terms + style, D3).
+    private(set) var lastContext: InsertionContext?
 
     func setPids(captured: pid_t?, current: pid_t?) {
         capturedPid = captured
@@ -103,14 +109,17 @@ actor FakeInserter: Inserting {
         return target
     }
 
-    func insert(_ text: String, target: InsertionTarget) async throws -> InsertionResult {
+    func insert(_ text: String, target: InsertionTarget,
+                context: InsertionContext) async throws -> InsertionResult {
         if currentPid != target.pid { return .copiedToClipboard }
         inserted.append(text)
+        lastContext = context
         return .pasted(appBundleID: target.bundleID, element: target.element,
                        insertedLength: text.utf16.count)
     }
 
-    func replaceLastInsertion(raw: String?, cleaned: String?) async {
+    func replaceLastInsertion(raw: String?, cleaned: String?,
+                              context: InsertionContext) async {
         replaceCalls.append((raw, cleaned))
     }
 }
@@ -420,6 +429,28 @@ private actor MutexedResultBox {
     #expect(ok)
     // "raw transcript" → "R transcript" (pre-clean) → "cleaned: R transcript" (post-clean pass is identity).
     #expect(await inserter.inserted == ["cleaned: R transcript"])
+}
+
+/// T8: the terms hook feeds the ASR prompt, the cleanup `{terms}` line, and
+/// the insertion context — one consistent snapshot per dictation.
+@Test func dictionaryTermsReachAsrCleanupAndInsertion() async {
+    let transcriber = FakeTranscriber()
+    let cleaner = FakeCleaner()
+    let inserter = FakeInserter()
+    let pipeline = makePipeline(
+        transcriber: transcriber, cleaner: cleaner, inserter: inserter,
+        hooks: PipelineHooks(terms: { ["Supabase", "Xcode"] }))
+    let collector = UpdateCollector(); collector.start(pipeline)
+
+    await pipeline.handle(.toggle)
+    await pipeline.handle(.toggle)
+    let ok = await collector.wait {
+        if case .inserted = $0 { return true } else { return false }
+    }
+    #expect(ok)
+    #expect(await transcriber.lastPrompt == ["Supabase", "Xcode"])
+    #expect(await cleaner.lastTerms == ["Supabase", "Xcode"])
+    #expect(await inserter.lastContext?.terms == ["Supabase", "Xcode"])
 }
 
 // MARK: - paste-raw (§3.9/T11)
