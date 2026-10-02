@@ -173,19 +173,19 @@ final class MachineBox: @unchecked Sendable {
                 ? modifiers.fn
                 : flagIsDown(keyCode: keyCode, modifiers: modifiers)
             if keyCode == HotkeyStateMachine.fnKeyCode {
-                hotkeyLog.info("Fn flags: down=\(down, privacy: .public) HIDFn=\(CGEventSource.keyState(.hidSystemState, key: keyCode), privacy: .public)")
+                hotkeyLog.debug("Fn flags: down=\(down, privacy: .public) HIDFn=\(CGEventSource.keyState(.hidSystemState, key: keyCode), privacy: .public)")
             }
             onInput?("flagsChanged keyCode=\(keyCode) down=\(down)")
             return .flags(keyCode: keyCode, down: down, modifiers: modifiers, at: at)
         case .keyDown:
             if keyCode == HotkeyStateMachine.fnKeyCode {
-                hotkeyLog.info("Fn keyDown: flag=\(modifiers.fn, privacy: .public)")
+                hotkeyLog.debug("Fn keyDown: flag=\(modifiers.fn, privacy: .public)")
             }
             onInput?("keyDown keyCode=\(keyCode)")
             return .key(keyCode: keyCode, down: true, modifiers: modifiers, at: at)
         case .keyUp:
             if keyCode == HotkeyStateMachine.fnKeyCode {
-                hotkeyLog.info("Fn keyUp: flag=\(modifiers.fn, privacy: .public)")
+                hotkeyLog.debug("Fn keyUp: flag=\(modifiers.fn, privacy: .public)")
             }
             return .key(keyCode: keyCode, down: false, modifiers: modifiers, at: at)
         default:
@@ -220,7 +220,7 @@ final class MachineBox: @unchecked Sendable {
             scheduleTick(tickAt: tickAt, guard: tickGuard, continuation: continuation)
         }
         for event in result.events {
-            hotkeyLog.info("emit \(String(describing: event), privacy: .public)")
+            hotkeyLog.debug("emit \(String(describing: event), privacy: .public)")
             continuation?.yield(event)
         }
         return result.consume ? nil : Unmanaged.passRetained(event)
@@ -235,7 +235,7 @@ final class MachineBox: @unchecked Sendable {
             guard tickGuard.isCurrent(token) else { return }
             guard let result = self?.withLock({ $0.handle(.tick(at: tickAt)) }) else { return }
             for event in result.events {
-                hotkeyLog.info("emit \(String(describing: event), privacy: .public)")
+                hotkeyLog.debug("emit \(String(describing: event), privacy: .public)")
                 continuation?.yield(event)
             }
         }

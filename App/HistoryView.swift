@@ -248,47 +248,35 @@ struct HistoryView: View {
     /// Word-level raw→cleaned diff (WordDiff): removed words struck out in
     /// tertiary, added words in signal, unchanged in secondary.
     private func diffText(_ record: Dictation) -> Text {
-        var out = Text("")
+        var out = AttributedString()
         for op in WordDiff.compute(old: record.rawText, new: record.cleanedText) {
+            var part: AttributedString
             switch op {
             case .same(let word):
-                out = out + Text("\(word) ")
-                    .foregroundStyle(Theme.Color.textSecondary)
+                part = AttributedString("\(word) ")
+                part.foregroundColor = Theme.Color.textSecondary
             case .removed(let word):
-                out = out + Text("\(word) ")
-                    .foregroundStyle(Theme.Color.textTertiary)
-                    .strikethrough()
+                part = AttributedString("\(word) ")
+                part.foregroundColor = Theme.Color.textTertiary
+                part.strikethroughStyle = NSUnderlineStyle.single
             case .added(let word):
-                out = out + Text("\(word) ")
-                    .foregroundStyle(Theme.Color.signal)
+                part = AttributedString("\(word) ")
+                part.foregroundColor = Theme.Color.signal
             case .changed(_, let new):
                 // A case/punctuation swap — just the new word, no struck twin.
-                out = out + Text("\(new) ")
-                    .foregroundStyle(Theme.Color.signal)
+                part = AttributedString("\(new) ")
+                part.foregroundColor = Theme.Color.signal
             }
+            out.append(part)
         }
-        return out.font(Theme.Font.caption)
+        return Text(out).font(Theme.Font.caption)
     }
 
-    /// Play/pause + dot-matrix scrubber: one row of dots, played = text.primary.
+    /// Play/pause + dot-matrix scrubber on its own feed observer — the 10 Hz
+    /// progress tick re-renders only this row, not the whole list.
     private func audioPlayer(_ record: Dictation) -> some View {
-        let isPlaying = model.playingDictationID == record.id
-        let progress = isPlaying ? model.playbackProgress : 0
-        return HStack(spacing: Theme.Space.m) {
-            Button {
-                model.togglePlayback(record)
-            } label: {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.Color.textPrimary)
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.hushGhost)
-            .accessibilityLabel(isPlaying ? "Pause" : "Play")
-
-            Scrubber(progress: progress)
-                .frame(maxWidth: 200)
-                .frame(height: 12)
+        PlaybackControls(playback: model.playback, recordID: record.id) {
+            model.togglePlayback(record)
         }
     }
 
@@ -315,6 +303,33 @@ struct HistoryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.bottom, Theme.Space.huge)
+    }
+}
+
+/// Play/pause + scrubber for one dictation; the only view observing
+/// `PlaybackFeed` (10 Hz progress updates stay inside this control).
+private struct PlaybackControls: View {
+    @ObservedObject var playback: PlaybackFeed
+    let recordID: String
+    var onToggle: () -> Void
+
+    var body: some View {
+        let isPlaying = playback.playingDictationID == recordID
+        let progress = isPlaying ? playback.progress : 0
+        HStack(spacing: Theme.Space.m) {
+            Button(action: onToggle) {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.Color.textPrimary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.hushGhost)
+            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+
+            Scrubber(progress: progress)
+                .frame(maxWidth: 200)
+                .frame(height: 12)
+        }
     }
 }
 

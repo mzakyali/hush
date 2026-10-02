@@ -48,31 +48,13 @@ final class AppModel: ObservableObject {
     @Published var whisperStatus: ModelLoadState = .notDownloaded
     @Published var cleanupStatus: ModelLoadState = .notDownloaded
 
-    // Overlay pill state — the bottom panel only exists during dictation; the
-    // idle affordance is the separate right-edge side panel.
-    enum OverlayState: Equatable {
-        case hidden, recording, processing, done, copied, error(String), cancelled
-    }
-    /// Drives enter/exit transitions (entering/exiting are animation start points).
-    enum OverlayPhase { case hidden, entering, visible, exiting, exitingCancel }
-    @Published var overlayState: OverlayState = .hidden {
-        didSet { overlay.syncInteraction() }
-    }
-    @Published var overlayPhase: OverlayPhase = .hidden
-    /// Pill bounds in overlay-panel coordinates — the window accepts clicks
-    /// only inside it; written by the view via a preference key.
-    var pillHitRect = CGRect.zero
-    /// Smoothed, dB-mapped levels, newest first — the wave reads `[0]` for its
-    /// amplitude; the rest of the history is retained for future use.
-    @Published var levelHistory: [Float] = []
-    var doneAt = Date()
-    private var smoothedLevel: Float = 0
-    private var overlayGeneration = 0
-
-    // Side-panel geometry is owned by the window controller.
-    @Published var edgeExpanded = false
-    @Published var edgeAttachment: SidePanelAttachment = .right
-    @Published var edgePanelSize: CGSize = .zero
+    // Hot UI state lives on focused feeds (StateFeeds.swift) so views that
+    // don't read it don't re-evaluate on every level tick or animation frame:
+    // RecordingFeed ~12 Hz during dictation, SidePanelGeometry per hover
+    // frame, PlaybackFeed 10 Hz during audio playback.
+    let recording = RecordingFeed()
+    let geometry = SidePanelGeometry()
+    let playback = PlaybackFeed()
 
     // Store + history.
     let store: DictationStore?
@@ -173,9 +155,6 @@ final class AppModel: ObservableObject {
     @Published var resolvedMicName: String?
 
     private var audioPlayer: AVAudioPlayer?
-    @Published var playingDictationID: String?
-    /// 0…1 playback progress of `playingDictationID`.
-    @Published var playbackProgress: Double = 0
     private var playbackTimer: Timer?
 
     nonisolated init() {
@@ -227,6 +206,11 @@ final class AppModel: ObservableObject {
         guard !didStart else { return }
         didStart = true
 
+        // Overlay interaction switches with the pill's state (the old didSet).
+        recording.onOverlayStateChange = { [weak self] in
+            self?.overlay.syncInteraction()
+        }
+
         if SnapshotRunner.requested {
             NSApp.appearance = NSAppearance(named: .darkAqua)
             Task {
@@ -248,7 +232,7 @@ final class AppModel: ObservableObject {
         }
         Task { [weak self, hotkeys] in
             for await event in hotkeys.events {
-                appLog.info("hotkey received: \(String(describing: event), privacy: .public)")
+                appLog.debug("hotkey received: \(String(describing: event), privacy: .public)")
                 await self?.pipeline.handle(event)
             }
         }
@@ -287,11 +271,11 @@ final class AppModel: ObservableObject {
 
         // Retention: at launch, then every 24 h.
         applyRetention()
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(24 * 3600))
                 guard !Task.isCancelled else { return }
-                await self?.applyRetention()
+                self?.applyRetention()
             }
         }
 
@@ -299,7 +283,36 @@ final class AppModel: ObservableObject {
 
         // Warm both models in the background, concurrently.
         prepareModels()
+
+        #if DEBUG
+        startSyntheticLevelsIfRequested()
+        #endif
     }
+
+    #if DEBUG
+    /// `--hush-synth-levels` — drive the hot recording-level path without a mic:
+    /// pill in `.recording` on-screen, ~12 Hz sine levels through `pushLevel`,
+    /// pipelineState `.recording`. Used to sample main-thread render cost
+    /// before/after the hot-state feed split. Debug-only.
+    private var synthLevelTask: Task<Void, Never>?
+    private func startSyntheticLevelsIfRequested() {
+        guard CommandLine.arguments.contains("--hush-synth-levels") else { return }
+        pipelineState = .recording
+        micName = "Synthetic levels"
+        recording.overlayState = .recording
+        recording.overlayPhase = .visible
+        overlay.show()
+        var tick = 0
+        synthLevelTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                tick += 1
+                self.pushLevel(Float(max(0, 0.5 + 0.45 * sin(Double(tick) * 0.45))))
+                try? await Task.sleep(for: .milliseconds(83))
+            }
+        }
+    }
+    #endif
 
     func openMainWindow(page: MainPage? = nil) {
         if let page { mainWindow.navigate(to: page) }
@@ -399,26 +412,26 @@ final class AppModel: ObservableObject {
     private func apply(_ update: DictationPipeline.Update) {
         switch update {
         case .stateChanged(let state):
-            appLog.info("UI state: \(String(describing: state), privacy: .public)")
+            appLog.debug("UI state: \(String(describing: state), privacy: .public)")
             pipelineState = state
             hotkeys.setRecording(state == .recording)
             switch state {
             case .recording:
-                overlayGeneration += 1
-                overlayState = .recording
-                levelHistory = []
-                smoothedLevel = 0
-                overlayPhase = .entering
+                recording.overlayGeneration += 1
+                recording.overlayState = .recording
+                recording.levelHistory = []
+                recording.smoothedLevel = 0
+                recording.overlayPhase = .entering
                 overlay.show()
-                Task { [weak self] in self?.overlayPhase = .visible }
+                Task { [weak self] in self?.recording.overlayPhase = .visible }
             case .processing:
-                if overlayState == .recording { overlayState = .processing }
+                if recording.overlayState == .recording { recording.overlayState = .processing }
             case .idle:
-                levelHistory = []
-                smoothedLevel = 0
+                recording.levelHistory = []
+                recording.smoothedLevel = 0
                 // Outcome cases (cancelled/inserted/failed) own the exit; if the
                 // pipeline went idle without one, drop the pill immediately.
-                if overlayState == .recording || overlayState == .processing {
+                if recording.overlayState == .recording || recording.overlayState == .processing {
                     hideOverlay()
                 }
             }
@@ -439,31 +452,31 @@ final class AppModel: ObservableObject {
             lastError = message
             UserNotifications.post(message)
         case .recordingCancelled:
-            overlayGeneration += 1
-            levelHistory = []
-            overlayState = .cancelled
-            overlayPhase = .exitingCancel
-            let generation = overlayGeneration
+            recording.overlayGeneration += 1
+            recording.levelHistory = []
+            recording.overlayState = .cancelled
+            recording.overlayPhase = .exitingCancel
+            let generation = recording.overlayGeneration
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(160))
-                guard let self, self.overlayGeneration == generation else { return }
+                guard let self, self.recording.overlayGeneration == generation else { return }
                 self.hideOverlay()
             }
         case .inserted(_, let copied, let fellBack):
             if fellBack { lastError = "Cleanup fell back to raw transcript" }
-            overlayGeneration += 1
-            doneAt = Date()
-            overlayState = copied ? .copied : .done
+            recording.overlayGeneration += 1
+            recording.doneAt = Date()
+            recording.overlayState = copied ? .copied : .done
             exitOverlay(after: copied ? 1.2 : 0.65)
         case .failed(let message):
             lastError = message
-            overlayGeneration += 1
-            let showPill = overlayState == .hidden
-            overlayState = .error(Self.shortError(message))
+            recording.overlayGeneration += 1
+            let showPill = recording.overlayState == .hidden
+            recording.overlayState = .error(Self.shortError(message))
             if showPill {
-                overlayPhase = .entering
+                recording.overlayPhase = .entering
                 overlay.show()
-                Task { [weak self] in self?.overlayPhase = .visible }
+                Task { [weak self] in self?.recording.overlayPhase = .visible }
             }
             exitOverlay(after: 1.5)
         }
@@ -477,13 +490,13 @@ final class AppModel: ObservableObject {
 
     /// Exit animation (scale 0.96 + fade, 160 ms) then hide the panel.
     private func exitOverlay(after delay: Double) {
-        let generation = overlayGeneration
+        let generation = recording.overlayGeneration
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard let self, self.overlayGeneration == generation else { return }
-            self.overlayPhase = .exiting
+            guard let self, self.recording.overlayGeneration == generation else { return }
+            self.recording.overlayPhase = .exiting
             try? await Task.sleep(for: .milliseconds(160))
-            guard self.overlayGeneration == generation else { return }
+            guard self.recording.overlayGeneration == generation else { return }
             self.hideOverlay()
         }
     }
@@ -491,8 +504,8 @@ final class AppModel: ObservableObject {
     /// The dictation ended (or ended without an outcome) — drop the bottom
     /// pill. The idle affordance is the side panel; it lives in its own window.
     private func hideOverlay() {
-        overlayPhase = .hidden
-        overlayState = .hidden
+        recording.overlayPhase = .hidden
+        recording.overlayState = .hidden
         overlay.hide()
     }
 
@@ -566,9 +579,10 @@ final class AppModel: ObservableObject {
     /// pushed onto the rolling history (newest first, capped at 12 samples —
     /// the farthest of 23 symmetric columns is 11 away from the centre).
     private func pushLevel(_ level: Float) {
-        smoothedLevel += (level - smoothedLevel) * (level > smoothedLevel ? 0.6 : 0.15)
-        levelHistory.insert(smoothedLevel, at: 0)
-        if levelHistory.count > 12 { levelHistory.removeLast() }
+        recording.smoothedLevel += (level - recording.smoothedLevel)
+            * (level > recording.smoothedLevel ? 0.6 : 0.15)
+        recording.levelHistory.insert(recording.smoothedLevel, at: 0)
+        if recording.levelHistory.count > 12 { recording.levelHistory.removeLast() }
     }
 
     // MARK: - Store
@@ -619,7 +633,7 @@ final class AppModel: ObservableObject {
     func deleteAllHistory() {
         guard let store else { return }
         Task {
-            try? await store.deleteAll()
+            _ = try? await store.deleteAll()
             reloadData()
         }
     }
@@ -648,15 +662,15 @@ final class AppModel: ObservableObject {
     }
 
     func togglePlayback(_ record: Dictation) {
-        if playingDictationID == record.id {
+        if playback.playingDictationID == record.id {
             stopPlayback()
             return
         }
         guard let url = audioURL(for: record),
               let player = try? AVAudioPlayer(contentsOf: url) else { return }
         audioPlayer = player
-        playingDictationID = record.id
-        playbackProgress = 0
+        playback.playingDictationID = record.id
+        playback.progress = 0
         player.play()
         playbackTimer?.invalidate()
         playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -665,7 +679,7 @@ final class AppModel: ObservableObject {
                 if !player.isPlaying {
                     self.stopPlayback()
                 } else {
-                    self.playbackProgress = player.duration > 0
+                    self.playback.progress = player.duration > 0
                         ? player.currentTime / player.duration : 0
                 }
             }
@@ -675,8 +689,8 @@ final class AppModel: ObservableObject {
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
-        playingDictationID = nil
-        playbackProgress = 0
+        playback.playingDictationID = nil
+        playback.progress = 0
         playbackTimer?.invalidate()
         playbackTimer = nil
     }
@@ -703,8 +717,8 @@ final class AppModel: ObservableObject {
         switch pane {
         case .microphone:
             if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in
-                    Task { @MainActor [weak self] in self?.refreshPermissions() }
+                AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
+                    Task { @MainActor in self?.refreshPermissions() }
                 }
             } else {
                 openPrivacyPane(.microphone)

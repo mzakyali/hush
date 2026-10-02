@@ -5,14 +5,16 @@ import UserNotifications
 /// it only prompts the first time and returns the existing setting afterwards.
 enum UserNotifications {
     static func post(_ message: String) {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in
-            let content = UNMutableNotificationContent()
-            content.title = "Hush"
-            content.body = message
-            let request = UNNotificationRequest(
-                identifier: UUID().uuidString, content: content, trigger: nil)
-            center.add(request) { _ in }
-        }
+        // center is re-fetched inside the @Sendable completion rather than
+        // captured — UNUserNotificationCenter isn't Sendable.
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { _, _ in
+                let content = UNMutableNotificationContent()
+                content.title = "Hush"
+                content.body = message
+                let request = UNNotificationRequest(
+                    identifier: UUID().uuidString, content: content, trigger: nil)
+                UNUserNotificationCenter.current().add(request) { _ in }
+            }
     }
 }

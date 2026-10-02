@@ -83,4 +83,9 @@ public protocol Inserting: Sendable {
     /// Paste into `target`, or leave the text on the clipboard if the user switched
     /// apps since capture or no safe target exists.
     func insert(_ text: String, target: InsertionTarget) async throws -> InsertionResult
+    /// ⌃⌥Z paste-raw (spec §3.9/T11): replace the last pasted insertion with
+    /// `raw` when the target still contains exactly what was inserted.
+    /// `raw`/`cleaned` are the last dictation's texts (nil = none yet).
+    /// Failure paths notify the user; never throws.
+    func replaceLastInsertion(raw: String?, cleaned: String?) async
 }

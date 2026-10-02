@@ -109,6 +109,9 @@ public actor DictationPipeline {
     private let hooks: PipelineHooks
 
     private var pumpTasks: [Task<Void, Never>] = []
+    /// Raw + inserted text of the last completed dictation — the ⌃⌥Z paste-raw
+    /// source (the inserter verifies the target before replacing).
+    private var lastUndo: (raw: String, cleaned: String)?
 
     public init(
         recorder: any AudioRecording,
@@ -135,9 +138,14 @@ public actor DictationPipeline {
             await finishRecording()
         case (.recording, .cancel):
             await cancelRecording()
+        case (.idle, .pasteRaw):
+            // §3.9/T11 — replace the last insertion with the raw transcript.
+            // Only while idle; the inserter verifies the target's text first.
+            await inserter.replaceLastInsertion(
+                raw: lastUndo?.raw, cleaned: lastUndo?.cleaned)
         default:
             // .processing ignores everything (a start arriving then is naturally
-            // queued by the actor); idle ignores stray holdEnd/cancel/pasteRaw.
+            // queued by the actor); idle ignores stray holdEnd/cancel.
             break
         }
     }
@@ -230,6 +238,7 @@ public actor DictationPipeline {
 
             let copied: Bool
             if case .copiedToClipboard = outcome { copied = true } else { copied = false }
+            lastUndo = (raw: raw, cleaned: text)
             emit(.inserted(text: text, copiedToClipboard: copied, cleanupFallback: fellBack))
             await hooks.didFinish(DictationResult(
                 rawText: transcript.text, cleanedText: text, style: style,

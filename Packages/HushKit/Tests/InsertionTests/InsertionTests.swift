@@ -120,6 +120,81 @@ private final class Mutexed<Value>: @unchecked Sendable {
     #expect(InsertionPolicy.leadingSeparator(before: "d", text: "") == "")
 }
 
+// MARK: - paste-raw decision (spec §3.9, T11)
+
+@Test func pasteRawReplacesWhenRangeMatches() {
+    // Inserted " cleaned text" (leading space + cleaned), caret right after it
+    // at UTF-16 offset 20 → the range is [7, 20).
+    let action = PasteRawPolicy.decide(
+        raw: "raw text", cleaned: "cleaned text", inserted: " cleaned text",
+        caret: 20
+    ) { range in
+        range == NSRange(location: 7, length: 13) ? " cleaned text" : "wrong"
+    }
+    // Replacement keeps the separator: " raw text".
+    #expect(action == .replace(range: NSRange(location: 7, length: 13),
+                               text: " raw text"))
+}
+
+@Test func pasteRawNoSeparatorWhenCleanedHadNone() {
+    let action = PasteRawPolicy.decide(
+        raw: "um raw", cleaned: "cleaned", inserted: "cleaned",
+        caret: 7
+    ) { range in
+        range == NSRange(location: 0, length: 7) ? "cleaned" : nil
+    }
+    #expect(action == .replace(range: NSRange(location: 0, length: 7),
+                               text: "um raw"))
+}
+
+@Test func pasteRawChangedTextRefuses() {
+    // The field's text no longer matches what was inserted.
+    let action = PasteRawPolicy.decide(
+        raw: "raw", cleaned: "cleaned", inserted: "cleaned",
+        caret: 7
+    ) { _ in "edited!" }
+    #expect(action == .notify("Can't replace — text was changed"))
+
+    // …or the caret moved so the computed range misses entirely.
+    let offByOne = PasteRawPolicy.decide(
+        raw: "raw", cleaned: "cleaned", inserted: "cleaned",
+        caret: 3          // range would be [-4, 3) — invalid
+    ) { _ in "cleaned" }
+    #expect(offByOne == .notify("Can't replace — text was changed"))
+
+    // …or the range read comes back empty.
+    let unreadable = PasteRawPolicy.decide(
+        raw: "raw", cleaned: "cleaned", inserted: "cleaned",
+        caret: 7
+    ) { _ in nil }
+    #expect(unreadable == .notify("Can't replace — text was changed"))
+}
+
+@Test func pasteRawOpaqueOrClipboardOnlyNotifies() {
+    // No element / nothing pasted (clipboard result, AX-opaque app).
+    #expect(PasteRawPolicy.decide(
+        raw: "raw", cleaned: "cleaned", inserted: nil, caret: nil
+    ) { _ in nil } == .notify("Can't replace in this app"))
+    // Element existed but the caret can't be read → same answer.
+    #expect(PasteRawPolicy.decide(
+        raw: "raw", cleaned: "cleaned", inserted: "cleaned", caret: nil
+    ) { _ in nil } == .notify("Can't replace in this app"))
+}
+
+@Test func pasteRawNoCleanupIsNoOp() {
+    // raw == cleaned → nothing to undo.
+    #expect(PasteRawPolicy.decide(
+        raw: "same text", cleaned: "same text", inserted: "same text",
+        caret: 9
+    ) { _ in "same text" } == .notify("Nothing to undo — no cleanup was applied"))
+}
+
+@Test func pasteRawNoDictationNotifies() {
+    #expect(PasteRawPolicy.decide(
+        raw: nil, cleaned: nil, inserted: nil, caret: nil
+    ) { _ in nil } == .notify("Nothing to undo"))
+}
+
 // MARK: - pasteboard snapshot/restore
 
 @Test func pasteboardSnapshotRoundTrip() throws {

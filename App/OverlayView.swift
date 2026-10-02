@@ -6,7 +6,9 @@ import SwiftUI
 /// The panel exists only during dictation; the idle affordance is the
 /// right-edge side panel (`EdgePanelView`).
 struct OverlayPillView: View {
-    @ObservedObject var model: AppModel
+    /// The pill's hot state — RecordingFeed, not AppModel, so ~12 Hz level
+    /// updates re-render only this view.
+    @ObservedObject var feed: RecordingFeed
 
     // Wave grid: 25 columns × 7 rows, 3pt dots on a 5pt horizontal pitch and
     // a 3.5pt vertical pitch → 123 × 24 inside ~12pt padding → 148 × 32 pill.
@@ -50,13 +52,13 @@ struct OverlayPillView: View {
 
     /// Animation states drive a TimelineView; static states render once.
     private var needsTimeline: Bool {
-        switch model.overlayState {
+        switch feed.overlayState {
         case .recording, .processing, .done: return true
         default: return false
         }
     }
 
-    private var phase: AppModel.OverlayPhase { model.overlayPhase }
+    private var phase: RecordingFeed.OverlayPhase { feed.overlayPhase }
 
     private var scale: CGFloat {
         if reduceMotion { return 1 }
@@ -101,21 +103,21 @@ struct OverlayPillView: View {
                 }
             )
             .onPreferenceChange(PillFrameKey.self) { rect in
-                model.pillHitRect = rect
+                feed.pillHitRect = rect
             }
-            .animation(Theme.Motion.spring, value: model.overlayPhase)
+            .animation(Theme.Motion.spring, value: feed.overlayPhase)
     }
 
     // MARK: - states
 
     @ViewBuilder
     private func content(now: Date) -> some View {
-        switch model.overlayState {
+        switch feed.overlayState {
         case .recording:
             wave(now: now,
-                 amplitude: max(0.04, Double(model.levelHistory.first ?? 0) * 3),
+                 amplitude: max(0.04, Double(feed.levelHistory.first ?? 0) * 3),
                  period: 0.9, tint: Theme.Color.textPrimary,
-                 hotCenter: Double(model.levelHistory.first ?? 0) > 0.15)
+                 hotCenter: Double(feed.levelHistory.first ?? 0) > 0.15)
         case .processing:
             wave(now: now, amplitude: 1, period: 0.6,
                  tint: .white.opacity(0.55), hotCenter: false)
@@ -172,7 +174,7 @@ struct OverlayPillView: View {
     /// Done: the wave settles to its centre line for 150 ms, then a checkmark
     /// in `signal` for 450 ms before the pill exits.
     private func doneContent(now: Date) -> some View {
-        let elapsed = now.timeIntervalSince(model.doneAt)
+        let elapsed = now.timeIntervalSince(feed.doneAt)
         return ZStack {
             wave(now: now, amplitude: 0, period: 1,
                  tint: Theme.Color.textPrimary, hotCenter: false)

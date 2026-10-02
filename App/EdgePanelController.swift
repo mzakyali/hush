@@ -43,7 +43,7 @@ final class EdgePanelController {
         hoverTask = nil
         dragStart = nil
         pointerInside = false
-        model.edgeExpanded = false
+        model.geometry.edgeExpanded = false
         panel?.orderOut(nil)
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
@@ -74,7 +74,7 @@ final class EdgePanelController {
         panel.acceptsMouseMovedEvents = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        let hosting = EdgeHostingView(rootView: EdgePanelView(model: model))
+        let hosting = EdgeHostingView(rootView: EdgePanelView(model: model, geometry: model.geometry))
         hosting.sizingOptions = []
         hosting.onRightClick = { [weak self] event, view in
             self?.showContextMenu(with: event, in: view)
@@ -123,7 +123,7 @@ final class EdgePanelController {
         guard var origin = restingOrigin else { return }
         let width = EdgePanelView.size(expanded: false).width
         let right = origin.x + width / 2 >= visible.midX
-        model.edgeAttachment = right ? .right : .left
+        model.geometry.edgeAttachment = right ? .right : .left
         origin.x = right ? visible.maxX - width : visible.minX
         restingOrigin = origin
     }
@@ -132,9 +132,9 @@ final class EdgePanelController {
         guard let panel, let origin = restingOrigin,
               let screen = screen(for: origin) else { return }
         let summary = EdgePanelView.size(expanded: false)
-        let size = EdgePanelView.size(expanded: model.edgeExpanded)
+        let size = EdgePanelView.size(expanded: model.geometry.edgeExpanded)
         var point = NSPoint(x: origin.x, y: origin.y + (summary.height - size.height) / 2)
-        if model.edgeAttachment == .right { point.x += summary.width - size.width }
+        if model.geometry.edgeAttachment == .right { point.x += summary.width - size.width }
         point = clamped(point, size: size, in: screen.visibleFrame)
         let target = NSRect(origin: point, size: size)
         frameTask?.cancel()
@@ -170,7 +170,7 @@ final class EdgePanelController {
 
     private func applyFrame(_ frame: NSRect) {
         guard let panel else { return }
-        model.edgePanelSize = frame.size
+        model.geometry.edgePanelSize = frame.size
         panel.setFrame(frame, display: true)
     }
 
@@ -180,19 +180,19 @@ final class EdgePanelController {
         guard let panel, panel.isVisible else { return }
         if dragStart != nil { panel.ignoresMouseEvents = false; return }
         let local = NSPoint(x: mouse.x - panel.frame.minX, y: panel.frame.maxY - mouse.y)
-        let shape = SidePanelShape(attachment: model.edgeAttachment)
+        let shape = SidePanelShape(attachment: model.geometry.edgeAttachment)
         let inside = shape.path(in: NSRect(origin: .zero, size: panel.frame.size)).contains(local)
         panel.ignoresMouseEvents = !inside
         guard !frameAnimating,
-              inside != pointerInside || (model.edgeExpanded != inside && hoverTask == nil) else { return }
+              inside != pointerInside || (model.geometry.edgeExpanded != inside && hoverTask == nil) else { return }
         pointerInside = inside
         hoverTask?.cancel()
         hoverTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(inside ? 350 : 400))
             guard !Task.isCancelled, let self, self.dragStart == nil else { return }
             self.hoverTask = nil
-            guard self.model.edgeExpanded != inside else { return }
-            self.model.edgeExpanded = inside
+            guard self.model.geometry.edgeExpanded != inside else { return }
+            self.model.geometry.edgeExpanded = inside
             self.layout(animated: true)
         }
     }
@@ -226,7 +226,7 @@ final class EdgePanelController {
         guard let screen else { return }
         let frame = NSRect(origin: clamped(point, size: start.frame.size, in: screen.visibleFrame),
                            size: start.frame.size)
-        model.edgeAttachment = frame.maxX == screen.visibleFrame.maxX ? .right
+        model.geometry.edgeAttachment = frame.maxX == screen.visibleFrame.maxX ? .right
             : frame.minX == screen.visibleFrame.minX ? .left : .floating
         let summary = EdgePanelView.size(expanded: false)
         self.restingOrigin = NSPoint(x: frame.midX - summary.width / 2,
@@ -240,7 +240,7 @@ final class EdgePanelController {
         dragStart = nil
         hoverTask?.cancel()
         hoverTask = nil
-        model.edgeExpanded = false
+        model.geometry.edgeExpanded = false
         guard let screen = screen(for: restingOrigin) else { return }
         dockToNearestEdge(in: screen.visibleFrame)
         if let origin = restingOrigin, !SnapshotRunner.requested {

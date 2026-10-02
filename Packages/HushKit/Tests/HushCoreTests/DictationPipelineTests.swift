@@ -89,6 +89,8 @@ actor FakeInserter: Inserting {
     var currentPid: pid_t? = 42
     private(set) var inserted: [String] = []
     private(set) var capturedTargets: [InsertionTarget] = []
+    /// (raw, cleaned) pairs the pipeline asked to paste over the last insertion.
+    private(set) var replaceCalls: [(raw: String?, cleaned: String?)] = []
 
     func setPids(captured: pid_t?, current: pid_t?) {
         capturedPid = captured
@@ -106,6 +108,10 @@ actor FakeInserter: Inserting {
         inserted.append(text)
         return .pasted(appBundleID: target.bundleID, element: target.element,
                        insertedLength: text.utf16.count)
+    }
+
+    func replaceLastInsertion(raw: String?, cleaned: String?) async {
+        replaceCalls.append((raw, cleaned))
     }
 }
 
@@ -383,6 +389,60 @@ private actor MutexedResultBox {
     #expect(ok)
     // "raw transcript" → "R transcript" (pre-clean) → "cleaned: R transcript" (post-clean pass is identity).
     #expect(await inserter.inserted == ["cleaned: R transcript"])
+}
+
+// MARK: - paste-raw (§3.9/T11)
+
+/// ⌃⌥Z while idle hands the last dictation's raw + inserted text to the
+/// inserter, which does the AX verify + replace.
+@Test func pasteRawHandsLastDictationToInserter() async {
+    let inserter = FakeInserter()
+    let pipeline = makePipeline(inserter: inserter)
+    let collector = UpdateCollector(); collector.start(pipeline)
+
+    await pipeline.handle(.toggle)
+    await pipeline.handle(.toggle)
+    let ok = await collector.wait {
+        if case .inserted = $0 { return true } else { return false }
+    }
+    #expect(ok)
+
+    await pipeline.handle(.pasteRaw)
+    let calls = await inserter.replaceCalls
+    #expect(calls.count == 1)
+    #expect(calls[0].raw == "raw transcript")
+    #expect(calls[0].cleaned == "cleaned: raw transcript")
+}
+
+/// ⌃⌥Z mid-recording is ignored — it can only act on a completed insertion.
+@Test func pasteRawIgnoredWhileRecording() async {
+    let inserter = FakeInserter()
+    let pipeline = makePipeline(inserter: inserter)
+    let collector = UpdateCollector(); collector.start(pipeline)
+
+    await pipeline.handle(.toggle)
+    await pipeline.handle(.toggle)
+    _ = await collector.wait {
+        if case .inserted = $0 { return true } else { return false }
+    }
+
+    await pipeline.handle(.toggle)              // recording again
+    await pipeline.handle(.pasteRaw)            // ignored
+    #expect(await inserter.replaceCalls.isEmpty)
+    await pipeline.handle(.cancel)
+}
+
+/// With no completed dictation there's nothing to replace; the inserter still
+/// gets the call (nil texts → its "Nothing to undo" notification path).
+@Test func pasteRawWithNoDictationNotifies() async {
+    let inserter = FakeInserter()
+    let pipeline = makePipeline(inserter: inserter)
+
+    await pipeline.handle(.pasteRaw)
+    let calls = await inserter.replaceCalls
+    #expect(calls.count == 1)
+    #expect(calls[0].raw == nil)
+    #expect(calls[0].cleaned == nil)
 }
 
 // MARK: - mic fallback (§4a/T12)

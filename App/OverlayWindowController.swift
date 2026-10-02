@@ -41,7 +41,7 @@ final class OverlayWindowController {
     /// click-through. The nonactivating panel never takes focus, so clicking
     /// can't steal the insertion target from the frontmost app.
     func syncInteraction() {
-        panel?.ignoresMouseEvents = model.overlayState != .recording
+        panel?.ignoresMouseEvents = model.recording.overlayState != .recording
     }
 
     private func ensurePanel() -> NSPanel {
@@ -60,8 +60,8 @@ final class OverlayWindowController {
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        let hosting = OverlayHostingView(rootView: OverlayPillView(model: model))
-        hosting.hitArea = { [weak model] in model?.pillHitRect ?? .zero }
+        let hosting = OverlayHostingView(rootView: OverlayPillView(feed: model.recording))
+        hosting.hitArea = { [weak model] in model?.recording.pillHitRect ?? .zero }
         hosting.onLeftClick = { [weak model] in model?.toggleDictation() }
         hosting.frame = NSRect(origin: .zero, size: Self.size)
         hosting.autoresizingMask = [.width, .height]

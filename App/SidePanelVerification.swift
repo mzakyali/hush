@@ -57,8 +57,8 @@ enum SidePanelVerification {
         model.edgePanel.endDrag()
         await waitUntil { panel.frame.maxX == screen.visibleFrame.maxX }
         guard panel.frame.maxX == screen.visibleFrame.maxX, panel.frame.minY == before.y - 80,
-              model.edgeAttachment == .right else {
-            print("FAIL: a released middle-screen drag did not snap to the nearest right edge (frame \(panel.frame), before \(before), side \(model.edgeAttachment))")
+              model.geometry.edgeAttachment == .right else {
+            print("FAIL: a released middle-screen drag did not snap to the nearest right edge (frame \(panel.frame), before \(before), side \(model.geometry.edgeAttachment))")
             return false
         }
         print("PASS: middle-screen release snaps to the nearest right edge")
@@ -70,7 +70,7 @@ enum SidePanelVerification {
                                          y: movedBody.y))
         model.edgePanel.endDrag()
         await waitUntil { panel.frame.minX == screen.visibleFrame.minX }
-        guard model.edgeAttachment == .left, panel.frame.minX == screen.visibleFrame.minX,
+        guard model.geometry.edgeAttachment == .left, panel.frame.minX == screen.visibleFrame.minX,
               screen.visibleFrame.contains(panel.frame) else {
             print("FAIL: a released middle-screen drag did not snap to the nearest left edge")
             return false
@@ -86,9 +86,9 @@ enum SidePanelVerification {
         // Reaching the target frame precedes the animation task's completion.
         await waitUntil {
             model.edgePanel.syncInteraction(at: NSPoint(x: panel.frame.midX, y: panel.frame.midY))
-            return model.edgeExpanded && panel.frame.width == EdgePanelView.size(expanded: true).width
+            return model.geometry.edgeExpanded && panel.frame.width == EdgePanelView.size(expanded: true).width
         }
-        guard model.edgeExpanded, panel.frame.width == EdgePanelView.size(expanded: true).width else {
+        guard model.geometry.edgeExpanded, panel.frame.width == EdgePanelView.size(expanded: true).width else {
             print("FAIL: hovering did not reveal the detail panel")
             return false
         }

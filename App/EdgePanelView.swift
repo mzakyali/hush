@@ -87,6 +87,9 @@ struct SidePanelShape: Shape {
 
 struct EdgePanelView: View {
     @ObservedObject var model: AppModel
+    /// Geometry publishes on every hover-animation frame — a focused feed so
+    /// those frames re-render only this view.
+    @ObservedObject var geometry: SidePanelGeometry
     var forceExpanded = false
     var forceAttachment: SidePanelAttachment?
 
@@ -94,13 +97,13 @@ struct EdgePanelView: View {
         expanded ? CGSize(width: 240, height: 424) : CGSize(width: 56, height: 260)
     }
 
-    private var isExpanded: Bool { model.edgeExpanded || forceExpanded }
-    private var attachment: SidePanelAttachment { forceAttachment ?? model.edgeAttachment }
+    private var isExpanded: Bool { geometry.edgeExpanded || forceExpanded }
+    private var attachment: SidePanelAttachment { forceAttachment ?? geometry.edgeAttachment }
     @HushReducedMotion private var reduceMotion
 
     var body: some View {
-        let size = forceAttachment != nil || model.edgePanelSize == .zero
-            ? Self.size(expanded: isExpanded) : model.edgePanelSize
+        let size = forceAttachment != nil || geometry.edgePanelSize == .zero
+            ? Self.size(expanded: isExpanded) : geometry.edgePanelSize
         let shape = SidePanelShape(attachment: attachment)
         VStack(spacing: isExpanded ? 12 : 8) {
             dragHandle

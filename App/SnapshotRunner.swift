@@ -99,39 +99,40 @@ enum SnapshotRunner {
         model.micName = nil
 
         // --- overlay states (rendered at the full 360 × 90 panel size) ---
-        model.overlayPhase = .visible
+        let feed = model.recording
+        feed.overlayPhase = .visible
         let panel = CGSize(width: 360, height: 90)
 
         // Quiet: low levels → flat centre line.
-        model.overlayState = .recording
-        model.levelHistory = [Float](repeating: 0.02, count: 12)
-        render(OverlayPillView(model: model), size: panel,
+        feed.overlayState = .recording
+        feed.levelHistory = [Float](repeating: 0.02, count: 12)
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-recording-quiet", in: dir)
 
         // Loud: full-amplitude wave (newest level is what drives the wave).
-        model.levelHistory = (0..<12).map { Float(max(0.15, 1.0 - Double($0) * 0.08)) }
-        render(OverlayPillView(model: model), size: panel,
+        feed.levelHistory = (0..<12).map { Float(max(0.15, 1.0 - Double($0) * 0.08)) }
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-recording-loud", in: dir)
 
-        model.overlayState = .processing
-        render(OverlayPillView(model: model), size: panel,
+        feed.overlayState = .processing
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-processing", in: dir)
 
-        model.overlayState = .done
-        model.doneAt = Date().addingTimeInterval(-0.2)   // past the collapse
-        render(OverlayPillView(model: model), size: panel,
+        feed.overlayState = .done
+        feed.doneAt = Date().addingTimeInterval(-0.2)   // past the collapse
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-done", in: dir)
 
-        model.overlayState = .copied
-        render(OverlayPillView(model: model), size: panel,
+        feed.overlayState = .copied
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-copied", in: dir)
 
-        model.overlayState = .error("No speech")
-        render(OverlayPillView(model: model), size: panel,
+        feed.overlayState = .error("No speech")
+        render(OverlayPillView(feed: feed), size: panel,
                name: "overlay-error", in: dir)
 
-        model.overlayState = .hidden
-        model.overlayPhase = .hidden
+        feed.overlayState = .hidden
+        feed.overlayPhase = .hidden
         print("snapshots → \(dir.path)")
     }
 
@@ -220,7 +221,8 @@ enum SnapshotRunner {
             LinearGradient(
                 colors: [Color(hb: 0x8E939B), Color(hb: 0x676C73)],
                 startPoint: .topLeading, endPoint: .bottomTrailing)
-            EdgePanelView(model: model, forceExpanded: expanded, forceAttachment: attachment)
+            EdgePanelView(model: model, geometry: model.geometry,
+                          forceExpanded: expanded, forceAttachment: attachment)
         }
         render(view.environment(\.hushReducedMotion, reducedMotion),
                size: CGSize(width: 360, height: 560), name: name, in: dir)

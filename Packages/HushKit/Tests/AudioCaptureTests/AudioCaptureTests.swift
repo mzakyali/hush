@@ -152,6 +152,135 @@ private func makePCMBuffer(_ samples: [Float] = [0.1, -0.1, 0.2, -0.2]) -> AVAud
     #expect(sink.takeSamples().count == 3)
 }
 
+// MARK: - configuration-change restart
+
+/// The Discord-call scenario: another app changes the shared input device,
+/// AVAudioEngine stops itself. `handleConfigurationChange` rebuilds the tap
+/// onto the same sink — samples captured before AND after the restart must
+/// all come back from takeSamples()/stop().
+@Test func restartPreservesSamplesAcrossRebuild() async throws {
+    let recorder = AudioRecorder()
+    // No real I/O in tests — replace prepare()+start() with a no-op.
+    await recorder.setEngineStarter { _ in }
+    try await recorder.start(deviceUID: nil)
+
+    recorder.sink.append(makePCMBuffer([0.1, 0.2, 0.3]))   // "before" audio
+    await recorder.handleConfigurationChange()             // simulated restart
+    recorder.sink.append(makePCMBuffer([0.4, 0.5]))        // "after" audio
+
+    let audio = try await recorder.stop()
+    #expect(audio.buffer.samples == [0.1, 0.2, 0.3, 0.4, 0.5])
+}
+
+/// Restarts are capped per recording; once the budget is exhausted the
+/// recording is marked failed and stop() throws instead of silently
+/// returning a truncated take.
+@Test func restartCapSurfacesErrorAtStop() async throws {
+    let recorder = AudioRecorder()
+    await recorder.setEngineStarter { _ in }
+    try await recorder.start(deviceUID: nil)
+
+    for _ in 0 ..< RestartBudget.limit {       // all within budget — OK
+        await recorder.handleConfigurationChange()
+    }
+    recorder.sink.append(makePCMBuffer([0.1]))
+    await recorder.handleConfigurationChange()  // one over → marked failed
+
+    await #expect(throws: RecorderError.self) {
+        _ = try await recorder.stop()
+    }
+}
+
+/// A failed rebuild doesn't kill the recording permanently: the next config
+/// change retries (the other app released the device) and clears the failure.
+@Test func failedRestartRetriesOnNextChange() async throws {
+    struct Boom: Error {}
+    let recorder = AudioRecorder()
+    let failing = MutexedFlag()
+    await recorder.setEngineStarter { engine in
+        engine.prepare()
+        if failing.value { throw Boom() }
+    }
+    try await recorder.start(deviceUID: nil)
+
+    failing.set(true)
+    await recorder.handleConfigurationChange()   // restart fails → marked
+    // The other app released the device: the next change retries and wins.
+    failing.set(false)
+    await recorder.handleConfigurationChange()
+    recorder.sink.append(makePCMBuffer([0.9]))
+    let audio = try await recorder.stop()
+    #expect(audio.buffer.samples == [0.9])
+}
+
+/// One reconfiguration posts a burst of notifications (a hog event fired 6+
+/// in ~1.5 s in the harness). They must coalesce into ONE restart — without
+/// the debounce a single Discord-call event burned the whole restart budget.
+@Test func configChangeBurstCoalescesToOneRestart() async throws {
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        var value: Int { lock.withLock { n } }
+        func bump() { lock.withLock { n += 1 } }
+    }
+    let starts = Counter()
+    let recorder = AudioRecorder()
+    await recorder.setEngineStarter { engine in
+        engine.prepare()
+        starts.bump()
+    }
+    try await recorder.start(deviceUID: nil)      // 1 start
+
+    for _ in 0 ..< 6 { await recorder.noteConfigurationChange() }
+    try? await Task.sleep(for: .milliseconds(800))  // past the 150 ms quiet window
+
+    #expect(starts.value == 2)                    // start + one coalesced restart
+    recorder.sink.append(makePCMBuffer([0.5]))
+    let audio = try await recorder.stop()
+    #expect(audio.buffer.samples == [0.5])
+}
+
+/// A second, well-separated event still restarts — debounce only collapses
+/// bursts, it doesn't swallow later changes. (The 700 ms gap clears the
+/// 150 ms debounce + 250 ms self-notification suppression.)
+@Test func separatedConfigChangesEachRestart() async throws {
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        var value: Int { lock.withLock { n } }
+        func bump() { lock.withLock { n += 1 } }
+    }
+    let starts = Counter()
+    let recorder = AudioRecorder()
+    await recorder.setEngineStarter { engine in
+        engine.prepare()
+        starts.bump()
+    }
+    try await recorder.start(deviceUID: nil)
+
+    await recorder.noteConfigurationChange()
+    try? await Task.sleep(for: .milliseconds(700))
+    await recorder.noteConfigurationChange()
+    try? await Task.sleep(for: .milliseconds(700))
+
+    #expect(starts.value == 3)                    // start + two restarts
+    _ = try await recorder.stop()
+}
+
+private final class MutexedFlag: @unchecked Sendable {
+    private var flag = false
+    private let lock = NSLock()
+    var value: Bool { lock.withLock { flag } }
+    func set(_ v: Bool) { lock.withLock { flag = v } }
+}
+
+@Test func restartBudgetCountsToFive() {
+    var budget = RestartBudget()
+    var results: [Bool] = []
+    for _ in 0 ..< 7 { results.append(budget.consume()) }
+    #expect(results == [true, true, true, true, true, false, false])
+}
+
 @Test func audioDevicesListReturnsConnectedInputs() {
     // Smoke test only — runs without touching hardware state.
     for device in AudioDevices.list() {
