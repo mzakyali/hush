@@ -52,6 +52,20 @@ public struct DictationStats: Sendable, Equatable {
     }
 }
 
+/// One row of `app_styles` — a user override, or (for `dictationApps()`)
+/// a bundleID/name pair seen in history with `style` empty.
+public struct AppStyleOverride: Sendable, Equatable {
+    public var bundleID: String
+    public var appName: String?
+    public var style: String
+
+    public init(bundleID: String, appName: String? = nil, style: String) {
+        self.bundleID = bundleID
+        self.appName = appName
+        self.style = style
+    }
+}
+
 /// What the pipeline hands the store after a completed dictation.
 public struct DictationInput: Sendable {
     public var rawText: String
@@ -78,8 +92,8 @@ public struct DictationInput: Sendable {
     }
 }
 
-/// GRDB store (plan T7): `dictations` + `stats_daily` + the tables later
-/// milestones need (`dictionary_entries`, `suggestions`, `app_styles`).
+/// GRDB store (plan T7): `dictations` + `stats_daily` + `app_styles` + the
+/// tables later milestones need (`dictionary_entries`, `suggestions`).
 /// Audio goes to `<audioDir>/<id>.m4a` via `AudioEncoder`.
 public actor DictationStore {
     public static let defaultRetentionDays = 30
@@ -150,7 +164,43 @@ public actor DictationStore {
                 t.column("speakingSeconds", .double).notNull().defaults(to: 0)
             }
         }
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: "ALTER TABLE app_styles ADD COLUMN appName TEXT")
+            // stats_daily has been bumped inside save() since v1, but a DB
+            // that predates per-save aggregation (or one whose stats were
+            // cleared) gets its missing days back here. Days already present
+            // are authoritative: retention/deletes intentionally keep their
+            // aggregates, so recomputing them from surviving rows would
+            // silently shrink the user's totals.
+            try backfillDailyStats(db)
+        }
         try migrator.migrate(db)
+    }
+
+    /// Insert `stats_daily` rows for days that have dictations but no
+    /// aggregate row (§7/§3.15). Existing rows are left untouched.
+    static func backfillDailyStats(_ db: Database) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT createdAt, cleanedText, durationSec FROM dictations
+            """)
+        var perDay: [String: (words: Int, sessions: Int, seconds: Double)] = [:]
+        for row in rows {
+            let day = dayKey(Date(timeIntervalSince1970: row["createdAt"]))
+            let words = (row["cleanedText"] as String)
+                .split(whereSeparator: { $0.isWhitespace }).count
+            var agg = perDay[day] ?? (0, 0, 0)
+            agg.words += words
+            agg.sessions += 1
+            agg.seconds += row["durationSec"] as Double
+            perDay[day] = agg
+        }
+        for (day, agg) in perDay {
+            try db.execute(sql: """
+                INSERT INTO stats_daily (day, words, sessions, speakingSeconds)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(day) DO NOTHING
+                """, arguments: [day, agg.words, agg.sessions, agg.seconds])
+        }
     }
 
     // MARK: - write
@@ -242,6 +292,76 @@ public actor DictationStore {
             try db.execute(sql: "DELETE FROM dictations WHERE createdAt < ?", arguments: [cutoff])
             return try Int.fetchOne(db, sql: "SELECT changes()") ?? 0
         }
+    }
+
+    // MARK: - app styles (§3.7 / plan T10)
+
+    /// Set or replace a per-app style override. `appName` is best-effort
+    /// display metadata — pass the localized name when known.
+    public func setStyleOverride(bundleID: String, appName: String? = nil,
+                                 style: String) throws {
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO app_styles (bundleID, appName, style)
+                VALUES (?, ?, ?)
+                ON CONFLICT(bundleID) DO UPDATE SET
+                    appName = COALESCE(excluded.appName, app_styles.appName),
+                    style = excluded.style
+                """, arguments: [bundleID, appName, style])
+        }
+    }
+
+    public func removeStyleOverride(bundleID: String) throws {
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM app_styles WHERE bundleID = ?",
+                           arguments: [bundleID])
+        }
+    }
+
+    /// Every user override, bundleID → row.
+    public func styleOverrides() throws -> [AppStyleOverride] {
+        try db.read { db in
+            try Row.fetchAll(db, sql:
+                "SELECT bundleID, appName, style FROM app_styles ORDER BY bundleID")
+                .map { row in
+                    AppStyleOverride(bundleID: row["bundleID"],
+                                     appName: row["appName"],
+                                     style: row["style"])
+                }
+        }
+    }
+
+    /// bundleID → last-seen display name for every app in dictation history.
+    /// Feeds the Styles page's "seen in history" rows.
+    public func dictationApps() throws -> [AppStyleOverride] {
+        try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT appBundleID, appName, MAX(createdAt) FROM dictations
+                WHERE appBundleID IS NOT NULL
+                GROUP BY appBundleID
+                """)
+                .map { row in
+                    AppStyleOverride(bundleID: row["appBundleID"],
+                                     appName: row["appName"],
+                                     style: "")
+                }
+        }
+    }
+
+    // MARK: - statistics
+
+    /// Settings → "Reset statistics": clears `stats_daily` only — dictation
+    /// history, dictionary and style overrides are untouched.
+    public func resetStatistics() throws {
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM stats_daily")
+        }
+    }
+
+    /// Re-derives missing `stats_daily` rows (the v2 migration's backfill),
+    /// exposed for tests simulating a pre-aggregation database.
+    func backfillDailyStats() throws {
+        try db.write { db in try Self.backfillDailyStats(db) }
     }
 
     // MARK: - read

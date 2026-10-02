@@ -197,6 +197,16 @@ final class AppModel: ObservableObject {
         var hooks = PipelineHooks()
         hooks.deviceUIDs = { mics.candidates() }
         hooks.didFinish = { result in await finish.run(result) }
+        // §3.7/T10: resolve the cleanup style against the app captured at
+        // stop — the pipeline passes the same bundleID the insert targets.
+        hooks.style = { [store] bundleID in
+            guard let store else { return .default }
+            let overrides = ((try? await store.styleOverrides()) ?? [])
+                .reduce(into: [String: CleanupStyle]()) {
+                    $0[$1.bundleID] = CleanupStyle(rawValue: $1.style) ?? .default
+                }
+            return StyleResolver.resolve(bundleID: bundleID, overrides: overrides)
+        }
         pipeline = DictationPipeline(
             recorder: recorder,
             transcriber: transcriber,
@@ -640,6 +650,94 @@ final class AppModel: ObservableObject {
         recentDictations = (try? await store.recent(limit: 5)) ?? []
         stats = (try? await store.stats(typingWPM: Self.typingWPM)) ?? DictationStats()
         wordsPerDay = (try? await store.wordsPerDay(last: 84)) ?? [:]
+        let overrides = (try? await store.styleOverrides()) ?? []
+        let historyApps = (try? await store.dictationApps()) ?? []
+        styleRows = Self.buildStyleRows(overrides: overrides, historyApps: historyApps)
+    }
+
+    // MARK: - Styles (§3.7 / T10)
+
+    /// One row per app on the Styles page.
+    struct StyleAppRow: Identifiable, Equatable {
+        var id: String { bundleID }
+        let bundleID: String
+        let name: String
+        /// nil = app not installed (override/history only) → generic icon.
+        let icon: NSImage?
+        /// True when the effective style comes from the built-in map.
+        let isBuiltIn: Bool
+        /// True when an `app_styles` row exists for this bundleID.
+        let isOverridden: Bool
+        let effective: CleanupStyle
+    }
+
+    @Published var styleRows: [StyleAppRow] = []
+
+    /// Rows = installed built-in-map apps + overridden apps + apps seen in
+    /// history, sorted by name. Names/icons resolve via NSWorkspace; history
+    /// names fill in for apps that aren't installed.
+    static func buildStyleRows(overrides: [AppStyleOverride],
+                               historyApps: [AppStyleOverride]) -> [StyleAppRow] {
+        var overridesByID: [String: AppStyleOverride] = [:]
+        for o in overrides { overridesByID[o.bundleID] = o }
+        var names: [String: String] = [:]
+        for app in historyApps {
+            names[app.bundleID] = app.appName ?? names[app.bundleID]
+        }
+        var ids: [String] = []
+        var seen = Set<String>()
+        for bundleID in StyleResolver.builtInDefaults.keys.sorted()
+            where NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil {
+            ids.append(bundleID); seen.insert(bundleID)
+        }
+        for app in overrides + historyApps where !seen.contains(app.bundleID) {
+            ids.append(app.bundleID); seen.insert(app.bundleID)
+        }
+        let workspace = NSWorkspace.shared
+        return ids.map { bundleID in
+            let url = workspace.urlForApplication(withBundleIdentifier: bundleID)
+            let icon = url.map { workspace.icon(forFile: $0.path) }
+            let name = url?.deletingPathExtension().lastPathComponent
+                ?? names[bundleID] ?? bundleID
+            let override = overridesByID[bundleID]
+            let resolved = StyleResolver.resolve(
+                bundleID: bundleID,
+                overrides: override.map { [$0.bundleID: CleanupStyle(rawValue: $0.style) ?? .default] } ?? [:])
+            return StyleAppRow(
+                bundleID: bundleID,
+                name: name,
+                icon: icon,
+                isBuiltIn: override == nil && StyleResolver.builtInDefaults[bundleID] != nil,
+                isOverridden: override != nil,
+                effective: resolved)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func setStyle(bundleID: String, name: String? = nil, style: CleanupStyle) {
+        guard let store else { return }
+        Task {
+            try? await store.setStyleOverride(bundleID: bundleID, appName: name,
+                                              style: style.rawValue)
+            reloadData()
+        }
+    }
+
+    func resetStyle(bundleID: String) {
+        guard let store else { return }
+        Task {
+            try? await store.removeStyleOverride(bundleID: bundleID)
+            reloadData()
+        }
+    }
+
+    /// Settings → Privacy: wipe `stats_daily` only; history stays.
+    func resetStatistics() {
+        guard let store else { return }
+        Task {
+            _ = try? await store.resetStatistics()
+            reloadData()
+        }
     }
 
     func deleteDictation(_ record: Dictation) {

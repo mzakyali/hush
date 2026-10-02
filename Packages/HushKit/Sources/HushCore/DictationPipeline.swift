@@ -11,8 +11,10 @@ public struct PipelineHooks: Sendable {
     /// Deterministic replacement rules, applied before and after cleanup.
     /// Identity until T8.
     public var replacements: @Sendable (String) -> String
-    /// Cleanup style for the insertion target. `.default` until T10.
-    public var style: @Sendable () -> CleanupStyle
+    /// Cleanup style for the insertion target's app (T10). Receives the
+    /// bundle ID captured at stop — the same `InsertionTarget` the insert
+    /// uses — so style and target can never disagree.
+    public var style: @Sendable (String?) async -> CleanupStyle
     /// Ordered input-device candidates (CoreAudio UIDs; nil = system default),
     /// resolved at recording start by spec §4a/T12. If the first device fails to
     /// start, the next connected device in priority order is tried, with the
@@ -25,7 +27,7 @@ public struct PipelineHooks: Sendable {
     public init(
         terms: @escaping @Sendable () -> [String] = { [] },
         replacements: @escaping @Sendable (String) -> String = { $0 },
-        style: @escaping @Sendable () -> CleanupStyle = { .default },
+        style: @escaping @Sendable (String?) async -> CleanupStyle = { _ in .default },
         deviceUIDs: @escaping @Sendable () -> [String?] = { [nil] },
         didFinish: @escaping @Sendable (DictationResult) async -> Void = { _ in }
     ) {
@@ -204,7 +206,7 @@ public actor DictationPipeline {
             // Spec: the insertion target and style are the ones focused/selected when
             // recording stops — capture before transcription, which can take seconds.
             let target = await inserter.captureTarget()
-            let style = hooks.style()
+            let style = await hooks.style(target.bundleID)
 
             let asrStart = Date()
             let transcript = try await transcriber.transcribe(audio.buffer, prompt: hooks.terms())

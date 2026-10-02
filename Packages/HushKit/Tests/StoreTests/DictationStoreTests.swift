@@ -107,3 +107,118 @@ private func input(cleaned: String, raw: String = "raw", daysAgo: Double = 0,
     #expect(!FileManager.default.fileExists(
         atPath: dir.appending(path: saved.audioPath!).path))
 }
+
+// MARK: - daily aggregates (§3.15 / T14)
+
+@Test func saveIncrementsDailyStats() async throws {
+    let store = try makeStore()
+    let (i1, at1) = input(cleaned: "one two three", duration: 4)
+    let (i2, at2) = input(cleaned: "four five", duration: 6)
+    _ = try await store.save(i1, at: at1)
+    _ = try await store.save(i2, at: at2)
+    let (old, oldAt) = input(cleaned: "yesterday entry", daysAgo: 1, duration: 2)
+    _ = try await store.save(old, at: oldAt)
+
+    let stats = try await store.stats()
+    #expect(stats.todayWords == 5)
+    #expect(stats.todaySessions == 2)
+    #expect(stats.totalWords == 7)
+    #expect(stats.totalSessions == 3)
+    #expect(abs(stats.speakingSeconds - 12) < 0.001)
+
+    let todayKey = DictationStore.dayKey(Date())
+    let yesterdayKey = DictationStore.dayKey(Date().addingTimeInterval(-86400))
+    let perDay = try await store.wordsPerDay(last: 7)
+    #expect(perDay[todayKey] == 5)
+    #expect(perDay[yesterdayKey] == 2)
+}
+
+/// §3.15: wiping `stats_daily` then running the v2 backfill must reproduce
+/// exactly what `stats()`/`wordsPerDay()` reported before — the migration
+/// can never change a user's numbers.
+@Test func backfillRestoresAggregates() async throws {
+    let store = try makeStore()
+    let (i1, at1) = input(cleaned: "alpha beta gamma", duration: 3)
+    _ = try await store.save(i1, at: at1)
+    let (i2, at2) = input(cleaned: "delta epsilon", daysAgo: 1, duration: 5)
+    _ = try await store.save(i2, at: at2)
+    let (i3, at3) = input(cleaned: "zeta", daysAgo: 1, duration: 2)
+    _ = try await store.save(i3, at: at3)
+    let before = try await store.stats()
+    let beforePerDay = try await store.wordsPerDay(last: 30)
+
+    try await store.resetStatistics()
+    #expect(try await store.stats().totalSessions == 0)
+
+    try await store.backfillDailyStats()
+    #expect(try await store.stats() == before)
+    #expect(try await store.wordsPerDay(last: 30) == beforePerDay)
+}
+
+@Test func resetStatisticsClearsAggregatesOnly() async throws {
+    let store = try makeStore()
+    let (i, at) = input(cleaned: "kept in history", audio: true)
+    let saved = try await store.save(i, at: at)
+    try await store.resetStatistics()
+
+    let stats = try await store.stats()
+    #expect(stats.totalWords == 0)
+    #expect(stats.totalSessions == 0)
+    #expect(stats.speakingSeconds == 0)
+    #expect(try await store.wordsPerDay(last: 30).isEmpty)
+    // History (and its audio) survives a stats reset.
+    #expect(try await store.search("").map(\.id) == [saved.id])
+}
+
+@Test func deleteAndDeleteAllKeepAggregates() async throws {
+    let store = try makeStore()
+    let (i1, at1) = input(cleaned: "stays", daysAgo: 1)
+    let first = try await store.save(i1, at: at1)
+    let (i2, at2) = input(cleaned: "goes today")
+    _ = try await store.save(i2, at: at2)
+
+    try await store.delete(id: first.id)
+    var stats = try await store.stats()
+    #expect(stats.totalSessions == 2)   // single delete keeps aggregates
+
+    _ = try await store.deleteAll()
+    #expect(try await store.search("").isEmpty)
+    stats = try await store.stats()
+    #expect(stats.totalSessions == 2)   // delete-all keeps aggregates
+    #expect(stats.totalWords == 3)
+}
+
+// MARK: - app styles (§3.7 / T10)
+
+@Test func appStyleOverrideCRUD() async throws {
+    let store = try makeStore()
+    #expect(try await store.styleOverrides().isEmpty)
+
+    try await store.setStyleOverride(bundleID: "com.apple.mail",
+                                     appName: "Mail", style: "formal")
+    try await store.setStyleOverride(bundleID: "com.hnc.Discord", style: "minimal")
+    var overrides = try await store.styleOverrides()
+    #expect(overrides.count == 2)
+    #expect(overrides[0].bundleID == "com.apple.mail")
+    #expect(overrides[0].appName == "Mail")
+    #expect(overrides[0].style == "formal")
+
+    // Re-set updates style, keeps the stored name when none is given.
+    try await store.setStyleOverride(bundleID: "com.apple.mail", style: "default")
+    overrides = try await store.styleOverrides()
+    #expect(overrides[0].style == "default")
+    #expect(overrides[0].appName == "Mail")
+
+    try await store.removeStyleOverride(bundleID: "com.apple.mail")
+    overrides = try await store.styleOverrides()
+    #expect(overrides.map(\.bundleID) == ["com.hnc.Discord"])
+}
+
+@Test func dictationAppsReturnsHistoryApps() async throws {
+    let store = try makeStore()
+    let (i, at) = input(cleaned: "hi")
+    _ = try await store.save(i, at: at)
+    let apps = try await store.dictationApps()
+    #expect(apps.map(\.bundleID) == ["com.test.App"])
+    #expect(apps[0].appName == "TestApp")
+}

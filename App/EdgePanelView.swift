@@ -283,7 +283,7 @@ struct EdgePanelView: View {
     // MARK: - expanded card
 
     private var expandedContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             dragHandle
             HStack(spacing: 8) {
                 StatusDot(level: statusLevel, text: "")
@@ -331,7 +331,11 @@ struct EdgePanelView: View {
                 gearButton
             }
         }
-        .padding(EdgeInsets(top: 10, leading: 16, bottom: 16, trailing: 16))
+        // The card's flat top edge sits `cy` (18 pt) below the silhouette
+        // bounds and the flat bottom edge `cy` above; the handle rides ~8 pt
+        // under the top edge and the footer ~16 pt above the bottom edge,
+        // clear of the concave fillets.
+        .padding(EdgeInsets(top: 26, leading: 16, bottom: 34, trailing: 16))
     }
 
     /// Single-letter weekday labels under the dot matrix, one per column —
@@ -452,7 +456,7 @@ struct EdgePanelView: View {
                     .font(Theme.Font.data())
                     .foregroundStyle(Theme.Color.textPrimary)
             }
-            .padding(.vertical, 5)
+            .padding(.vertical, 4)
         }
     }
 

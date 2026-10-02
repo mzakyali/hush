@@ -120,8 +120,13 @@ actor FakeInserter: Inserting {
 /// Lock-guarded flag readable from @Sendable hooks.
 final class MutexedProbe: @unchecked Sendable {
     private var _transcribing = false
+    private var _bundleID: String?
     private let lock = NSLock()
     var transcribing: Bool { lock.withLock { _transcribing } }
+    var bundleID: String? {
+        get { lock.withLock { _bundleID } }
+        set { lock.withLock { _bundleID = newValue } }
+    }
     func markTranscribing() { lock.withLock { _transcribing = true } }
 }
 
@@ -337,7 +342,7 @@ private actor MutexedResultBox {
     await transcriber.setOnTranscribe { probe.markTranscribing() }
     let pipeline = makePipeline(
         transcriber: transcriber, cleaner: cleaner,
-        hooks: PipelineHooks(style: { probe.transcribing ? .formal : .default })
+        hooks: PipelineHooks(style: { _ in probe.transcribing ? .formal : .default })
     )
     let collector = UpdateCollector(); collector.start(pipeline)
 
@@ -348,6 +353,32 @@ private actor MutexedResultBox {
     }
     #expect(ok)
     #expect(await cleaner.lastStyle == .default)
+}
+
+/// T10: the style hook gets the bundle ID of the insertion target captured at
+/// stop — the same `InsertionTarget` the insert lands in — not a second,
+/// possibly stale, frontmost-app read.
+@Test func styleResolvesFromStopTimeTarget() async {
+    let cleaner = FakeCleaner()
+    let inserter = FakeInserter()
+    let seen = MutexedProbe()
+    let pipeline = makePipeline(
+        cleaner: cleaner, inserter: inserter,
+        hooks: PipelineHooks(style: { bundleID in
+            seen.bundleID = bundleID
+            return bundleID == "com.test.app" ? .casual : .default
+        })
+    )
+    let collector = UpdateCollector(); collector.start(pipeline)
+
+    await pipeline.handle(.toggle)
+    await pipeline.handle(.toggle)
+    let ok = await collector.wait {
+        if case .inserted = $0 { return true } else { return false }
+    }
+    #expect(ok)
+    #expect(seen.bundleID == "com.test.app")
+    #expect(await cleaner.lastStyle == .casual)
 }
 
 /// Regression: the level pump terminates its AsyncStream when cancelled at

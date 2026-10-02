@@ -161,10 +161,7 @@ struct MainWindowView: View {
                 text: "Your personal terms and text replacements will live here — Hush will learn how you spell names and jargon."
             )
         case .styles:
-            PlaceholderPage(
-                title: "Styles",
-                text: "Per-app cleanup styles will live here — pick casual in Slack, formal in Mail, and Hush will match."
-            )
+            StylesView(model: model)
         case .settings:
             SettingsView(model: model)
         }

@@ -60,6 +60,7 @@ enum SnapshotRunner {
         capturePage(.settings, model: model, height: 1180,
                     name: "settings-microphone", in: dir)
         capturePage(.dictionary, model: model, name: "dictionary", in: dir)
+        capturePage(.styles, model: model, height: 900, name: "styles", in: dir)
         capturePage(.history, model: model,
                     expandedID: model.dictations.first?.id,
                     name: "history-populated", in: dir)
@@ -192,6 +193,9 @@ enum SnapshotRunner {
                 audio: nil),
                 at: now.addingTimeInterval(-Double(week) * 3600))
         }
+        // One style override so the Styles page shows an overrode row (↺).
+        try? await store.setStyleOverride(bundleID: "com.apple.Notes",
+                                          appName: "Notes", style: "casual")
     }
 
     /// A device list for snapshots: internal + AirPods connected, a USB mic

@@ -152,7 +152,7 @@ final class EdgePanelController {
     /// sits near the top/bottom the window clamps to the screen and the rail
     /// keeps its screen position via `railCenterY`.
     private func layout(animated: Bool = false) {
-        guard let panel, let centre = restingCentre,
+        guard panel != nil, let centre = restingCentre,
               let screen = screen(for: centre) else { return }
         let win = EdgePanelLayout.window
         let m = EdgePanelLayout.margin
@@ -175,14 +175,21 @@ final class EdgePanelController {
         // The rail's centre in window coordinates (y-down) — the card morphs
         // out of it, so the view needs it even when the window is clamped.
         model.geometry.railCenterY = (origin.y + win.height) - centre.y
-        if animated, !reducedMotion(), panel.isVisible, panel.frame != target {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.25
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: true)
+        setPanelFrame(target, animated: animated)
+    }
+
+    /// Single funnel for every window frame write. Even instant moves go
+    /// through a zero-duration `animator().setFrame`: a direct `setFrame`
+    /// does NOT cancel an in-flight dock animation, and its stale ticks would
+    /// slam the window back to the old target mid-drag.
+    private func setPanelFrame(_ target: NSRect, animated: Bool = false) {
+        guard let panel else { return }
+        let animate = animated && !reducedMotion() && panel.isVisible
+            && panel.frame != target
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animate ? 0.25 : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(target, display: true)
         }
     }
 
@@ -286,7 +293,7 @@ final class EdgePanelController {
         if model.geometry.railCenterY != win.height / 2 {
             model.geometry.railCenterY = win.height / 2
         }
-        panel.setFrame(frame, display: true)
+        setPanelFrame(frame)
         panel.ignoresMouseEvents = false
     }
 

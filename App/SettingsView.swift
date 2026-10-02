@@ -10,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @State private var confirmDeleteAll = false
+    @State private var confirmResetStats = false
     @State private var modelStorageBytes: Int = 0
 
     var body: some View {
@@ -184,6 +185,21 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Every saved dictation and its audio is deleted permanently. Aggregate statistics are kept.")
+            }
+            Button("Reset statistics…", role: .destructive) {
+                confirmResetStats = true
+            }
+            .confirmationDialog(
+                "Reset all statistics?",
+                isPresented: $confirmResetStats,
+                titleVisibility: .visible
+            ) {
+                Button("Reset statistics", role: .destructive) {
+                    model.resetStatistics()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Word counts, sessions and speaking-time aggregates are cleared. Dictation history is kept.")
             }
         }
     }
