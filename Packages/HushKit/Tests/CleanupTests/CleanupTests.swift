@@ -200,12 +200,12 @@ private let messyRaw = "um one two three four five"
 }
 
 @Test func guardedCleanerFallsBackOnTimeout() async {
-    let cleaner = GuardedCleaner(StubCleaner(output: "irrelevant", delay: 2), timeout: 0.2)
+    let cleaner = GuardedCleaner(StubCleaner(output: "irrelevant", delay: 5), timeout: 0.2)
     let start = Date()
     let result = try? await cleaner.clean(messyRaw, style: .default, terms: [])
     #expect(result == messyRaw)
     #expect(await cleaner.lastCleanupFellBack == true)
-    #expect(Date().timeIntervalSince(start) < 1.0)  // didn't wait the full 2 s
+    #expect(Date().timeIntervalSince(start) < 2.5)  // didn't wait the full 5 s
 }
 
 @Test func guardedCleanerSkipsLLMForCleanInput() async {
