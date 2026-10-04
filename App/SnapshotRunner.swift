@@ -237,13 +237,13 @@ enum SnapshotRunner {
         model.listInputDevices = {
             [InputDevice(uid: "builtin-mic", name: "MacBook Pro Microphone"),
              InputDevice(uid: "yeti-usb", name: "Yeti Stereo Microphone"),
-             InputDevice(uid: "airpods-pro", name: "Zaky's AirPods Pro")]
+             InputDevice(uid: "airpods-pro", name: "AirPods Pro")]
         }
         model.refreshDevices()
         // Second refresh without the Yeti → known but DISCONNECTED.
         model.listInputDevices = {
             [InputDevice(uid: "builtin-mic", name: "MacBook Pro Microphone"),
-             InputDevice(uid: "airpods-pro", name: "Zaky's AirPods Pro")]
+             InputDevice(uid: "airpods-pro", name: "AirPods Pro")]
         }
         model.refreshDevices()
     }

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: Packages/HushKit/.build
+          key: hushkit-build-${{ hashFiles('Packages/HushKit/Package.resolved') }}
+          restore-keys: hushkit-build-
+
+      - name: Run tests
+        run: swift test --package-path Packages/HushKit

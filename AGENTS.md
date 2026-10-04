@@ -18,6 +18,7 @@ Local voice dictation app for macOS. See `docs/specs/hush-v1.md` and `docs/plans
 - `project.yml` — XcodeGen spec (regenerate the project after changing it; `Hush.xcodeproj` is git-ignored).
 - `App/` — app target sources (SwiftUI + AppKit), `App/HushIcon.icon` (Icon Composer doc — app icon, compiled by actool via `ASSETCATALOG_COMPILER_APPICON_NAME`), `App/Assets.xcassets/MenuBarIcon` (template menu-bar icon; regenerate PNGs with `swift scripts/render-icon.swift`).
 - `Packages/HushKit/` — all logic, one library target per module: `HushCore` (shared types, pipeline), `HotkeyService`, `AudioCapture`, `Transcription`, `Cleanup`, `Dictionary`, `Insertion`, `EditWatcher`, `Media`, `Store`. Each module has a test target.
+- `docs/brand/` — brand assets (mark/app-icon SVGs, banners, `brand-guidelines.md`); regenerate PNGs with `swift scripts/render-brand.swift` from the repo root.
 
 ## Rules
 
